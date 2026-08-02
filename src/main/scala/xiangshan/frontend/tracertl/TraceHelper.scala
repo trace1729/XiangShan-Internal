@@ -261,6 +261,28 @@ class TraceCollectorHelper(width: Int) extends ExtModule with HasExtModuleInline
   val inst = IO(Input(Vec(width, UInt(32.W))))
   val instNum = IO(Input(Vec(width, UInt(8.W))))
 
+  private val cppExtModule = {
+    def params(cppType: String, name: String): String =
+      (0 until width).map(i => s"  $cppType ${name}_$i").mkString(",\n")
+
+    val calls = (0 until width).map { i =>
+      s"  if (!reset && enable_$i) trace_collect_commit(pc_$i, inst_$i, instNum_$i, $i);"
+    }.mkString("\n")
+
+    s"""
+       |void TraceCollectorHelper(
+       |  uint8_t reset,
+       |${params("uint8_t", "enable")},
+       |${params("uint64_t", "pc")},
+       |${params("uint32_t", "inst")},
+       |${params("uint8_t", "instNum")}
+       |) {
+       |$calls
+       |}
+       |""".stripMargin
+  }
+  createCppExtModule("TraceCollectorHelper", cppExtModule, Some("\"tracertl.h\""))
+
   private def getVerilog: String = {
     def genPort(size: Int, baseName: String): String = {
       (0 until width)
@@ -319,6 +341,27 @@ class TraceDriveCollectorHelper(width: Int) extends ExtModule with HasExtModuleI
   val enable = IO(Input(Vec(width, Bool())))
   val pc = IO(Input(Vec(width, UInt(64.W))))
   val inst = IO(Input(Vec(width, UInt(32.W))))
+
+  private val cppExtModule = {
+    def params(cppType: String, name: String): String =
+      (0 until width).map(i => s"  $cppType ${name}_$i").mkString(",\n")
+
+    val calls = (0 until width).map { i =>
+      s"  if (!reset && enable_$i) trace_collect_drive(pc_$i, inst_$i, $i);"
+    }.mkString("\n")
+
+    s"""
+       |void TraceDriveCollectorHelper(
+       |  uint8_t reset,
+       |${params("uint8_t", "enable")},
+       |${params("uint64_t", "pc")},
+       |${params("uint32_t", "inst")}
+       |) {
+       |$calls
+       |}
+       |""".stripMargin
+  }
+  createCppExtModule("TraceDriveCollectorHelper", cppExtModule, Some("\"tracertl.h\""))
 
   private def getVerilog: String = {
     def genPort(size: Int, baseName: String): String = {
@@ -379,6 +422,28 @@ class TraceATSHelper extends ExtModule with HasExtModuleInline {
   val paddr = IO(Output(UInt(64.W)))
   val hit = IO(Output(Bool()))
 
+  private val cppExtModule =
+    """
+      |void TraceATSHelper(
+      |  uint8_t   reset,
+      |  uint8_t   valid,
+      |  uint16_t  asid,
+      |  uint16_t  vmid,
+      |  uint64_t  vaddr,
+      |  uint64_t& paddr,
+      |  uint8_t&  hit
+      |) {
+      |  if (!reset && valid) {
+      |    hit = trace_tlb_ats_hit(vaddr, asid, vmid);
+      |    paddr = trace_tlb_ats(vaddr, asid, vmid);
+      |  } else {
+      |    hit = 0;
+      |    paddr = 0;
+      |  }
+      |}
+      |""".stripMargin
+  createCppExtModule("TraceATSHelper", cppExtModule, Some("\"tracertl.h\""))
+
   private def getVerilog: String = {
     s"""
        |import "DPI-C" function longint trace_tlb_ats(
@@ -405,28 +470,19 @@ class TraceATSHelper extends ExtModule with HasExtModuleInline {
        |
        |  logic [63:0] logic_paddr;
        |  logic        logic_hit;
-       |  reg [63:0]   reg_paddr;
-       |  reg          reg_hit;
        |
-       |  always @(negedge clock) begin
+       |  always_comb begin
        |    if (!reset && valid) begin
-       |      logic_hit   <= trace_tlb_ats_hit(vaddr, asid, vmid);
-       |      logic_paddr <= trace_tlb_ats(vaddr, asid, vmid);
+       |      logic_hit   = trace_tlb_ats_hit(vaddr, asid, vmid);
+       |      logic_paddr = trace_tlb_ats(vaddr, asid, vmid);
        |    end else begin
-       |      logic_hit   <= 0;
-       |      logic_paddr <= 0;
+       |      logic_hit   = 0;
+       |      logic_paddr = 0;
        |    end
        |  end
        |
-       |  always @(posedge clock) begin
-       |    if (!reset && valid) begin
-       |      reg_paddr <= logic_paddr;
-       |      reg_hit   <= logic_hit;
-       |    end
-       |  end
-       |
-       |  assign paddr = reg_paddr;
-       |  assign hit   = reg_hit;
+       |  assign paddr = logic_paddr;
+       |  assign hit   = logic_hit;
        |endmodule
        |""".stripMargin
   }
@@ -445,6 +501,6 @@ class TraceFakeMMU(implicit p: Parameters) extends TraceModule {
   helper.asid := 0.U
   helper.vmid := 0.U
 
-  io.paddr := helper.paddr
-  io.hit := helper.hit
+  io.paddr := RegEnable(helper.paddr, io.valid)
+  io.hit := RegEnable(helper.hit, io.valid)
 }
