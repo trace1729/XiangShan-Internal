@@ -1535,7 +1535,7 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
       traceCollector.io.traceInfo(i)       := traceInfo
       XSError(
         traceCollector.io.enable && traceCollector.io.in(i).valid &&
-          SignExt(uop.debug_pc.getOrElse(0.U), XLEN) =/= traceInfo.pcVA,
+          SignExt(uop.debug_pc.getOrElse(0.U), XLEN) =/= SignExt(traceInfo.pcVA, XLEN),
         "Trace ROB commit pc mismatch"
       )
     }

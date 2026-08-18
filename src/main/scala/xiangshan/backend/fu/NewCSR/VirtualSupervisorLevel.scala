@@ -12,6 +12,7 @@ import xiangshan.backend.fu.NewCSR.CSRBundleImplicitCast._
 import xiangshan.backend.fu.NewCSR.CSRConfig.PPNLength
 import xiangshan.backend.fu.NewCSR.ChiselRecordForField._
 import xiangshan.backend.decode.isa.CSRs
+import xiangshan.frontend.tracertl.TraceRTLChoose
 
 import scala.collection.immutable.SeqMap
 
@@ -29,12 +30,16 @@ trait VirtualSupervisorLevel { self: NewCSR with SupervisorLevel with Hypervisor
       with HasVirtualSupervisorEnvBundle
     {
       when ((robCommit.fsDirty || writeFCSR) && isVirtMode) {
-        assert(reg.FS =/= ContextStatus.Off, "The vsstatus.FS should not be Off when set dirty, please check decode")
+        when (TraceRTLChoose(true.B, false.B)) {
+          assert(reg.FS =/= ContextStatus.Off, "The vsstatus.FS should not be Off when set dirty, please check decode")
+        }
         reg.FS := ContextStatus.Dirty
       }
 
       when ((robCommit.vsDirty || writeVCSR || robCommit.vstart.valid && robCommit.vstart.bits =/= 0.U) && isVirtMode) {
-        assert(reg.VS =/= ContextStatus.Off, "The vsstatus.VS should not be Off when set dirty, please check decode")
+        when (TraceRTLChoose(true.B, false.B)) {
+          assert(reg.VS =/= ContextStatus.Off, "The vsstatus.VS should not be Off when set dirty, please check decode")
+        }
         reg.VS := ContextStatus.Dirty
       }
       // when menvcfg or henvcfg.DTE close,  vsstatus.SDT is read-only

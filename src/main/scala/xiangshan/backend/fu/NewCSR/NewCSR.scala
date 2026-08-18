@@ -1185,17 +1185,29 @@ class NewCSR(implicit val p: Parameters) extends Module
     out
   }
 
-  private val traceTrapTargetPc = traceTargetPc(io.fromRob.trap.bits.traceInfo.target)
+  private val traceTrapTargetPc = RegEnable(
+    traceTargetPc(io.fromRob.trap.bits.traceInfo.target),
+    io.fromRob.trap.valid
+  )
   private val traceXretTargetPc = traceTargetPc(io.in.bits.traceInfo.target)
 
-  private val trapTargetUpdate = RegNext(nonDebugTrapEventValid || trapEntryDEvent.valid, false.B)
+  // Native trap target generation depends on the modeled CSR privilege/debug
+  // state. TraceRTL instead receives the architectural trap target directly
+  // from the trace, so every valid trace trap must produce the corresponding
+  // target update even when the native trap-entry event is suppressed.
+  private val nativeTrapTargetUpdate = nonDebugTrapEventValid || trapEntryDEvent.valid
+  private val trapTargetUpdate = RegNext(
+    TraceRTLChoose(nativeTrapTargetUpdate, io.fromRob.trap.valid),
+    false.B
+  )
+  private val nativeTrapTargetPc = Mux(
+    trapEntryDEvent.out.targetPc.valid,
+    trapEntryDEvent.out.targetPc.bits,
+    nonDebugTrapTargetPc
+  )
   io.trapTargetPc.valid := trapTargetUpdate
   io.trapTargetPc.bits := DataHoldBypass(
-    Mux(
-      trapEntryDEvent.out.targetPc.valid,
-      trapEntryDEvent.out.targetPc.bits,
-      TraceRTLChoose(nonDebugTrapTargetPc, traceTrapTargetPc),
-    ),
+    TraceRTLChoose(nativeTrapTargetPc, traceTrapTargetPc),
     trapTargetUpdate
   )
 
@@ -1609,8 +1621,18 @@ class NewCSR(implicit val p: Parameters) extends Module
   io.distributedWenLegal := wenLegalReg && !noCSRIllegalReg
   io.status.criticalErrorState := criticalErrorState && !dcsr.regOut.CETRIG.asBool
 
+  // TraceRTL starts from an instruction trace rather than a complete
+  // architectural checkpoint, so mnstatus.NMIE does not reflect the traced
+  // machine state. Treating its reset value as authoritative would latch a
+  // false double-trap critical error on the first traced exception and block
+  // ROB commit permanently. The trace supplies the architectural trap target;
+  // keep the native double-trap check unchanged outside TraceRTL mode.
+  val csrDoubleTrapInMN = TraceRTLChoose(
+    !mnstatus.regOut.NMIE && hasTrap && !(entryDebugMode || debugMode),
+    false.B
+  )
   val criticalErrors = Seq(
-    ("csr_dbltrp_inMN", !mnstatus.regOut.NMIE && hasTrap && !(entryDebugMode || debugMode)),
+    ("csr_dbltrp_inMN", csrDoubleTrapInMN),
   )
   criticalErrorStateInCSR := criticalErrors.map(criticalError => criticalError._2).reduce(_ || _).asBool
   generateCriticalErrors()

@@ -10,7 +10,7 @@ import xiangshan.JumpOpType
 import xiangshan.backend.datapath.DataConfig.VAddrData
 import xiangshan.frontend.PrunedAddrInit
 import xiangshan.frontend.bpu.BranchAttribute
-import xiangshan.frontend.tracertl.TraceRTLChoose
+import xiangshan.frontend.tracertl.{TraceRTLChoose, TraceRTLDontCareValue}
 
 class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg) {
   private val jumpDataModule = Module(new JumpDataModule)
@@ -67,9 +67,18 @@ class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg)
   redirect.target := jumpRealTarget
   redirect.pc := io.in.bits.data.pc.get
   redirect.isMisPred := needRedirect
-  redirect.backendIAF := io.instrAddrTransType.get.checkAccessFault(jumpRealFullTarget)
-  redirect.backendIPF := io.instrAddrTransType.get.checkPageFault(jumpRealFullTarget)
-  redirect.backendIGPF := io.instrAddrTransType.get.checkGuestPageFault(jumpRealFullTarget)
+  // TraceRTL has no complete privilege/translation CSR checkpoint.  Its
+  // architectural exceptions come from traceInfo, so address faults derived
+  // from the reset AddrTransType would be synthetic.
+  redirect.backendIAF := TraceRTLDontCareValue(
+    io.instrAddrTransType.get.checkAccessFault(jumpRealFullTarget)
+  )
+  redirect.backendIPF := TraceRTLDontCareValue(
+    io.instrAddrTransType.get.checkPageFault(jumpRealFullTarget)
+  )
+  redirect.backendIGPF := TraceRTLDontCareValue(
+    io.instrAddrTransType.get.checkGuestPageFault(jumpRealFullTarget)
+  )
   redirect.attribute := io.toFrontendBJUResolve.get.bits.attribute
   redirect.traceInfo := io.in.bits.ctrl.traceInfo
 //  redirect.debug_runahead_checkpoint_id := uop.debugInfo.runahead_checkpoint_id // Todo: assign it

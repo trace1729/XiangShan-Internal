@@ -17,6 +17,7 @@ import xiangshan.backend.fu.NewCSR.CSRFunc._
 import xiangshan.backend.fu.util.CSRConst._
 import xiangshan.backend.decode.isa.CSRs
 import xiangshan.DebugOptionsKey
+import xiangshan.frontend.tracertl.TraceRTLChoose
 import system.HasSoCParameter
 import utility.ZeroExt
 import scala.collection.immutable.SeqMap
@@ -631,12 +632,16 @@ class MstatusModule(implicit override val p: Parameters) extends CSRModule("MSta
   reconnectReg()
 
   when (robCommit.fsDirty || writeFCSR) {
-    assert(reg.FS =/= ContextStatus.Off, "The [m|s]status.FS should not be Off when set dirty, please check decode")
+    when (TraceRTLChoose(true.B, false.B)) {
+      assert(reg.FS =/= ContextStatus.Off, "The [m|s]status.FS should not be Off when set dirty, please check decode")
+    }
     reg.FS := ContextStatus.Dirty
   }
 
   when (robCommit.vsDirty || writeVCSR || robCommit.vstart.valid && robCommit.vstart.bits =/= 0.U) {
-    assert(reg.VS =/= ContextStatus.Off, "The [m|s]status.VS should not be Off when set dirty, please check decode")
+    when (TraceRTLChoose(true.B, false.B)) {
+      assert(reg.VS =/= ContextStatus.Off, "The [m|s]status.VS should not be Off when set dirty, please check decode")
+    }
     reg.VS := ContextStatus.Dirty
   }
   // when MDT is explicitly written by 1, clear MIE

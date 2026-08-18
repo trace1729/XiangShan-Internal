@@ -54,8 +54,17 @@ class TraceAlignParallel(implicit p: Parameters) extends TraceModule {
       val previousSequentialPc = rawInsts(i - 1).pcVA + Mux(isRVC(rawInsts(i - 1).inst), 2.U, 4.U)
       val previousPredictedEnd = !effectiveBlockSel(i - 1) &&
         block0.ftqOffset.valid && localEndOffset(i - 1) === block0.ftqOffset.bits
+      // An RVI inherited from the previous fetch block contributes only its
+      // trailing halfword to block 0.  Counting the complete four-byte
+      // instruction here would transition to block 1 one slot too early and
+      // drop the instruction immediately following the inherited RVI.
+      val previousOccupiedHalfwords = Mux(
+        inheritedHalfRvi(i - 1) || isRVC(rawInsts(i - 1).inst),
+        1.U,
+        2.U
+      )
       val previousReachesEnd = !effectiveBlockSel(i - 1) &&
-        (logicalStartWide(i - 1) + Mux(isRVC(rawInsts(i - 1).inst), 1.U, 2.U) >= block0.size)
+        (logicalStartWide(i - 1) + previousOccupiedHalfwords >= block0.size)
       val transitionToBlock1 = block1.valid && !blockState(i - 1) &&
         (internalCrossRvi(i - 1) || previousPredictedEnd || previousReachesEnd)
 

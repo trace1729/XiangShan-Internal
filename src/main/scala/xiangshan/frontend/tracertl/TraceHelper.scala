@@ -30,7 +30,17 @@ class TraceReaderHelper(width: Int)(implicit p: Parameters)
 
   private val fields = new TraceInstrInnerBundle().elements.toSeq.reverse
   private val fieldNames = fields.map(_._1)
-  private val fieldWidths = fields.map(_._2.getWidth)
+  private val logicalFieldWidths = fields.map(_._2.getWidth)
+  private def cppStorageWidth(width: Int): Int = width match {
+    case 1 => 8
+    case w if w <= 8 => 8
+    case w if w <= 16 => 16
+    case w if w <= 32 => 32
+    case w if w <= 64 => 64
+  }
+  // GSIM's C++ ExtModule path does not automatically clear bits above a
+  // narrow output port. Receive the complete C++ scalar and narrow it in RTL.
+  private val portWidths = logicalFieldWidths.map(cppStorageWidth)
   private def field(name: String): Data = fields.find(_._1 == name).get._2
   private def outputPorts(name: String, widthBits: Int): Seq[UInt] = {
     Seq.tabulate(width) { i =>
@@ -38,19 +48,24 @@ class TraceReaderHelper(width: Int)(implicit p: Parameters)
     }
   }
 
-  val insts_pcVA = outputPorts("pcVA", field("pcVA").getWidth)
-  val insts_pcPA = outputPorts("pcPA", field("pcPA").getWidth)
-  val insts_memoryAddrVA = outputPorts("memoryAddrVA", field("memoryAddrVA").getWidth)
-  val insts_memoryAddrPA = outputPorts("memoryAddrPA", field("memoryAddrPA").getWidth)
-  val insts_target = outputPorts("target", field("target").getWidth)
-  val insts_inst = outputPorts("inst", field("inst").getWidth)
-  val insts_memoryType = outputPorts("memoryType", field("memoryType").getWidth)
-  val insts_memorySize = outputPorts("memorySize", field("memorySize").getWidth)
-  val insts_branchType = outputPorts("branchType", field("branchType").getWidth)
-  val insts_branchTaken = outputPorts("branchTaken", field("branchTaken").getWidth)
-  val insts_exception = outputPorts("exception", field("exception").getWidth)
-  val insts_fastSimulation = outputPorts("fastSimulation", field("fastSimulation").getWidth)
-  val insts_InstID = outputPorts("InstID", field("InstID").getWidth)
+  private def rawOutputPorts(name: String): Seq[UInt] = {
+    val logicalWidth = field(name).getWidth
+    outputPorts(name, cppStorageWidth(logicalWidth))
+  }
+
+  val insts_pcVA = rawOutputPorts("pcVA")
+  val insts_pcPA = rawOutputPorts("pcPA")
+  val insts_memoryAddrVA = rawOutputPorts("memoryAddrVA")
+  val insts_memoryAddrPA = rawOutputPorts("memoryAddrPA")
+  val insts_target = rawOutputPorts("target")
+  val insts_inst = rawOutputPorts("inst")
+  val insts_memoryType = rawOutputPorts("memoryType")
+  val insts_memorySize = rawOutputPorts("memorySize")
+  val insts_branchType = rawOutputPorts("branchType")
+  val insts_branchTaken = rawOutputPorts("branchTaken")
+  val insts_exception = rawOutputPorts("exception")
+  val insts_fastSimulation = rawOutputPorts("fastSimulation")
+  val insts_InstID = rawOutputPorts("InstID")
 
   private def cppType(width: Int, isOutput: Boolean): String = {
     val base = width match {
@@ -64,7 +79,7 @@ class TraceReaderHelper(width: Int)(implicit p: Parameters)
   }
 
   private def cppFieldParams: Seq[String] = {
-    fieldNames.zip(fieldWidths).flatMap { case (name, fieldWidth) =>
+    fieldNames.zip(portWidths).flatMap { case (name, fieldWidth) =>
       (0 until width).map { i =>
         f"${cppType(fieldWidth, isOutput = true)}%-10s insts_${i}_${name}"
       }
@@ -108,7 +123,7 @@ class TraceReaderHelper(width: Int)(implicit p: Parameters)
 
   private def getVerilog: String = {
     val nameList = fieldNames
-    val sizeList = fieldWidths
+    val sizeList = portWidths
 
     def genElementPort(size: Int, baseName: String): String = {
       (0 until width)
@@ -216,33 +231,39 @@ class TraceRedirectHelper extends ExtModule with HasExtModuleInline {
   val reset = IO(Input(Reset()))
   val enable = IO(Input(Bool()))
   val InstID = IO(Input(UInt(64.W)))
+  val preserveDriveBefore = IO(Input(Bool()))
 
   private val cppExtModule =
     """
       |void TraceRedirectHelper(
       |  uint8_t  reset,
       |  uint8_t  enable,
-      |  uint64_t InstID
+      |  uint64_t InstID,
+      |  uint8_t  preserveDriveBefore
       |) {
-      |  if (enable && !reset) trace_redirect(InstID);
+      |  if (enable && !reset) trace_redirect(InstID, preserveDriveBefore);
       |}
       |""".stripMargin
   createCppExtModule("TraceRedirectHelper", cppExtModule, Some("\"tracertl.h\""))
 
   private def getVerilog: String = {
     s"""
-       |import "DPI-C" function void trace_redirect(input longint InstID);
+       |import "DPI-C" function void trace_redirect(
+       |  input longint InstID,
+       |  input byte preserveDriveBefore
+       |);
        |
        |module TraceRedirectHelper(
        |  input clock,
        |  input reset,
        |  input enable,
-       |  input [63:0] InstID
+       |  input [63:0] InstID,
+       |  input preserveDriveBefore
        |);
        |
        |  always @(negedge clock) begin
        |    if (enable && !reset) begin
-       |      trace_redirect(InstID);
+       |      trace_redirect(InstID, {7'b0, preserveDriveBefore});
        |    end
        |  end
        |endmodule

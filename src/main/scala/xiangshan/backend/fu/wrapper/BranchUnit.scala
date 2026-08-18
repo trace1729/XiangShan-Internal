@@ -11,7 +11,7 @@ import xiangshan.backend.datapath.DataConfig.VAddrData
 import xiangshan.{RedirectLevel, SelImm, XSModule}
 import xiangshan.frontend.PrunedAddrInit
 import xiangshan.frontend.bpu.BranchAttribute
-import xiangshan.frontend.tracertl.TraceRTLChoose
+import xiangshan.frontend.tracertl.{TraceRTLChoose, TraceRTLDontCareValue}
 
 class AddrAddModule(implicit p: Parameters) extends XSModule {
   val io = IO(new Bundle {
@@ -84,9 +84,18 @@ class BranchUnit(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg) {
       redirect.bits.taken := actualTaken
       redirect.bits.target := brhRealTarget
       redirect.bits.pc := io.in.bits.data.pc.get
-      redirect.bits.backendIAF := io.instrAddrTransType.get.checkAccessFault(brhRealFullTarget)
-      redirect.bits.backendIPF := io.instrAddrTransType.get.checkPageFault(brhRealFullTarget)
-      redirect.bits.backendIGPF := io.instrAddrTransType.get.checkGuestPageFault(brhRealFullTarget)
+      // TraceRTL has no complete privilege/translation CSR checkpoint.  Its
+      // architectural exceptions come from traceInfo, so address faults
+      // derived from the reset AddrTransType would be synthetic.
+      redirect.bits.backendIAF := TraceRTLDontCareValue(
+        io.instrAddrTransType.get.checkAccessFault(brhRealFullTarget)
+      )
+      redirect.bits.backendIPF := TraceRTLDontCareValue(
+        io.instrAddrTransType.get.checkPageFault(brhRealFullTarget)
+      )
+      redirect.bits.backendIGPF := TraceRTLDontCareValue(
+        io.instrAddrTransType.get.checkGuestPageFault(brhRealFullTarget)
+      )
       redirect.bits.attribute := io.toFrontendBJUResolve.get.bits.attribute
       redirect.bits.traceInfo := io.in.bits.ctrl.traceInfo
   }

@@ -30,6 +30,7 @@ import utility.UIntToMask
 import utility.XSError
 import utility.XSPerfAccumulate
 import utility.XSPerfHistogram
+import utility.XSPerfReference
 import utility.XSPerfRolling
 import utility.XSPerfSeqAccumulate
 import utility.XSPerfSeqRolling
@@ -334,7 +335,7 @@ class Ftq(implicit p: Parameters) extends FtqModule
   }
 
   io.toIfu.redirect.valid := backendRedirect.valid
-  io.toIfu.redirect.bits := backendRedirect.bits
+  io.toIfu.redirect.bits  := backendRedirect.bits
 
   io.toBpu.redirect.valid          := redirect.valid
   io.toBpu.redirect.bits.cfiPc     := getCfiPcFromOffset(PrunedAddrInit(redirect.bits.pc), redirect.bits.ftqOffset)
@@ -499,6 +500,149 @@ class Ftq(implicit p: Parameters) extends FtqModule
   )._1
   private val redirectPerfMeta = perfQueue(backendRedirect.bits.ftqIdx.value).bpuPerf
   private val commitPerfMeta   = perfQueue(commitPtr(0).value)
+
+  // Keep only unresolved accepted trains. A train becomes RPT when its FTQ
+  // entry commits and WPT when a backend redirect flushes its position. This
+  // replaces the event-level train/commit/redirect database for aggregate
+  // lifecycle statistics.
+  private val pendingTrainMask = RegInit(VecInit.fill(FtqSize)(0.U(FetchBlockInstNum.W)))
+  private val pendingTrainFlag = RegInit(VecInit.fill(FtqSize)(false.B))
+
+  private val acceptedTrainBranch = trainCache.bits.branches.map { branch =>
+    val hasOlderMispredict = trainCache.bits.branches.map { older =>
+      older.valid && older.bits.mispredict && older.bits.cfiPosition < branch.bits.cfiPosition
+    }.fold(false.B)(_ || _)
+    branch.valid && !hasOlderMispredict
+  }
+  private val acceptedTrainMask = acceptedTrainBranch.zip(trainCache.bits.branches).map {
+    case (valid, branch) => Mux(
+        valid,
+        UIntToOH(branch.bits.cfiPosition, FetchBlockInstNum),
+        0.U(FetchBlockInstNum.W)
+      )
+  }.reduce(_ | _)
+  private val acceptedTrainCount = PopCount(acceptedTrainBranch)
+  private val acceptedMispredictCount = PopCount(acceptedTrainBranch.zip(trainCache.bits.branches).map {
+    case (valid, branch) => valid && branch.bits.mispredict
+  })
+  private val acceptedTrain = io.toBpu.train.fire
+
+  // ResolveQueue may deliver a train after its FTQ entry committed. Classify
+  // that train immediately instead of allocating pending state for a reused
+  // circular-queue slot.
+  private val trainAlreadyCommitted = trainIndexCache < commitPtr(0) ||
+    (commit && trainIndexCache === commitPtr(0))
+  private val pendingTrainAccepted = acceptedTrain && !trainAlreadyCommitted
+
+  private val commitPendingMask = Mux(
+    pendingTrainFlag(commitPtr(0).value) === commitPtr(0).flag,
+    pendingTrainMask(commitPtr(0).value),
+    0.U(FetchBlockInstNum.W)
+  )
+  private val rptTrainCount = Mux(
+    acceptedTrain && trainAlreadyCommitted,
+    acceptedTrainCount,
+    0.U
+  ) + Mux(commit, PopCount(commitPendingMask), 0.U)
+
+  private val sameEntryRedirectMask = VecInit.tabulate(FetchBlockInstNum) { position =>
+    position.U > redirectCfiOffset ||
+    (backendRedirect.bits.flushItself() && position.U === redirectCfiOffset)
+  }.asUInt
+  private val redirectFlushMasks = Wire(Vec(FtqSize, UInt(FetchBlockInstNum.W)))
+  private val allocateReuseCounts = Wire(Vec(FtqSize, UInt(log2Ceil(FetchBlockInstNum + 1).W)))
+
+  for (i <- 0 until FtqSize) {
+    val allocateThisEntry = (prediction.fire || bpuS3Redirect) && !redirect.valid &&
+      predictionPtr.value === i.U
+    // Reallocating a circular FTQ slot can expose lifecycle state that was
+    // never observed by either commit or redirect. Preserve that loss as an
+    // explicit unclassified count. A same-cycle commit has already classified
+    // the old generation as RPT and must not be counted again here.
+    val commitsOldPending = commit && commitPtr(0).value === i.U &&
+      pendingTrainFlag(i) === commitPtr(0).flag
+    allocateReuseCounts(i) := Mux(
+      allocateThisEntry && pendingTrainMask(i).orR && !commitsOldPending,
+      PopCount(pendingTrainMask(i)),
+      0.U
+    )
+    val maskAfterAllocate = Mux(allocateThisEntry, 0.U, pendingTrainMask(i))
+    val flagAfterAllocate = Mux(allocateThisEntry, predictionPtr.flag, pendingTrainFlag(i))
+
+    val trainThisEntry      = pendingTrainAccepted && trainIndexCache.value === i.U
+    val sameTrainGeneration = flagAfterAllocate === trainIndexCache.flag
+    val maskAfterTrain = Mux(
+      trainThisEntry,
+      Mux(maskAfterAllocate.orR && !sameTrainGeneration, acceptedTrainMask, maskAfterAllocate | acceptedTrainMask),
+      maskAfterAllocate
+    )
+    val flagAfterTrain = Mux(trainThisEntry, trainIndexCache.flag, flagAfterAllocate)
+
+    val commitThisEntry = commit && commitPtr(0).value === i.U && flagAfterTrain === commitPtr(0).flag
+    val maskAfterCommit = Mux(commitThisEntry, 0.U, maskAfterTrain)
+    val flagAfterCommit = Mux(commitThisEntry, false.B, flagAfterTrain)
+    val pendingPtr      = FtqPtr(flagAfterCommit, i.U)
+    val afterRedirect   = pendingPtr > backendRedirect.bits.ftqIdx
+    val sameRedirect    = pendingPtr === backendRedirect.bits.ftqIdx
+    val positionMask    = Mux(afterRedirect, Fill(FetchBlockInstNum, 1.U(1.W)), sameEntryRedirectMask)
+    val flushMask = Mux(
+      backendRedirect.valid && maskAfterCommit.orR && (afterRedirect || sameRedirect),
+      maskAfterCommit & positionMask,
+      0.U
+    )
+    val finalMask = maskAfterCommit & ~flushMask
+
+    redirectFlushMasks(i) := flushMask
+    pendingTrainMask(i)   := finalMask
+    pendingTrainFlag(i)   := Mux(finalMask.orR, flagAfterCommit, false.B)
+  }
+
+  private val wptTrainCount     = redirectFlushMasks.map(PopCount(_)).reduce(_ +& _)
+  private val pendingTrainCount = pendingTrainMask.map(PopCount(_)).reduce(_ +& _)
+  private val intraPacketDuplicateCount = Mux(
+    acceptedTrain,
+    acceptedTrainCount - PopCount(acceptedTrainMask),
+    0.U
+  )
+  // A later train packet may repeat a position already pending for the same
+  // FTQ generation. The bitmask intentionally coalesces that position, so
+  // account for the extra train event explicitly instead of silently losing
+  // it from the lifecycle balance. A same-cycle slot allocation has already
+  // discarded the old generation and therefore has no cross-packet overlap.
+  private val allocatesTrainSlot = (prediction.fire || bpuS3Redirect) && !redirect.valid &&
+    predictionPtr === trainIndexCache
+  private val effectiveTrainSlotMask = Mux(
+    allocatesTrainSlot,
+    0.U,
+    pendingTrainMask(trainIndexCache.value)
+  )
+  private val effectiveTrainSlotFlag = Mux(
+    allocatesTrainSlot,
+    predictionPtr.flag,
+    pendingTrainFlag(trainIndexCache.value)
+  )
+  private val crossPacketDuplicateCount = Mux(
+    pendingTrainAccepted && effectiveTrainSlotFlag === trainIndexCache.flag,
+    PopCount(effectiveTrainSlotMask & acceptedTrainMask),
+    0.U
+  )
+  private val duplicateTrainPositionCount = intraPacketDuplicateCount + crossPacketDuplicateCount
+  private val trainReuseCount = Mux(
+    pendingTrainAccepted && pendingTrainMask(trainIndexCache.value).orR &&
+      pendingTrainFlag(trainIndexCache.value) =/= trainIndexCache.flag,
+    PopCount(pendingTrainMask(trainIndexCache.value)),
+    0.U
+  )
+  private val reusedPendingCount = trainReuseCount + allocateReuseCounts.reduce(_ +& _)
+
+  XSPerfAccumulate("bpu_train_packets", acceptedTrain)
+  XSPerfAccumulate("bpu_train_branches", Mux(acceptedTrain, acceptedTrainCount, 0.U))
+  XSPerfAccumulate("bpu_train_mispredict_branches", Mux(acceptedTrain, acceptedMispredictCount, 0.U))
+  XSPerfAccumulate("bpu_train_rpt", rptTrainCount)
+  XSPerfAccumulate("bpu_train_wpt", wptTrainCount)
+  XSPerfAccumulate("bpu_train_duplicate_positions", duplicateTrainPositionCount)
+  XSPerfAccumulate("bpu_train_unclassified_reuse", reusedPendingCount)
+  XSPerfReference("bpu_train_pending", pendingTrainCount)
 
   XSPerfSeqAccumulate(
     "squash_cycles_bp_wrong_redirect",
