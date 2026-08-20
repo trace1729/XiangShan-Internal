@@ -525,3 +525,156 @@ class TraceFakeMMU(implicit p: Parameters) extends TraceModule {
   io.paddr := RegEnable(helper.paddr, io.valid)
   io.hit := RegEnable(helper.hit, io.valid)
 }
+
+class TraceSatpPpnHelper extends ExtModule with HasExtModuleInline {
+  val clock = IO(Input(Clock()))
+  val reset = IO(Input(Reset()))
+  val enable = IO(Input(Bool()))
+  val ppn = IO(Output(UInt(44.W)))
+
+  private val cppExtModule =
+    """
+      |void TraceSatpPpnHelper(
+      |  uint8_t   reset,
+      |  uint8_t   enable,
+      |  uint64_t& ppn
+      |) {
+      |  if (!reset && enable) {
+      |    ppn = trace_get_satp_ppn() & ((1ULL << 44) - 1);
+      |  } else {
+      |    ppn = 0;
+      |  }
+      |}
+      |""".stripMargin
+  createCppExtModule("TraceSatpPpnHelper", cppExtModule, Some("\"tracertl.h\""))
+
+  private def getVerilog: String = {
+    s"""
+       |import "DPI-C" function longint trace_get_satp_ppn();
+       |module TraceSatpPpnHelper(
+       |  input clock,
+       |  input reset,
+       |  input enable,
+       |  output [43:0] ppn
+       |);
+       |assign ppn = (!reset && enable) ? trace_get_satp_ppn() : 44'b0;
+       |endmodule
+       |""".stripMargin
+  }
+
+  setInline(s"$desiredName.sv", getVerilog)
+}
+
+class TraceFakeSatpPpn(implicit p: Parameters) extends TraceModule {
+  val io = IO(new Bundle {
+    val ppn = Output(UInt(44.W))
+  })
+
+  private val helper = Module(new TraceSatpPpnHelper)
+  helper.clock := clock
+  helper.reset := reset
+  val startCount = RegInit(0.U(4.W))
+  when (startCount < 10.U) {
+    startCount := startCount + 1.U
+  }
+  val workingState = startCount >= 5.U
+  helper.enable := workingState
+  io.ppn := RegEnable(helper.ppn, 0.U, RegNext(workingState))
+}
+
+class TraceFakePageTableRespBundle(implicit p: Parameters) extends TraceBundle {
+  val data = Vec(2, UInt(256.W))
+  val addr = UInt(PAddrBits.W)
+}
+
+class TraceDynPageTableHelper extends ExtModule with HasExtModuleInline {
+  val clock = IO(Input(Clock()))
+  val reset = IO(Input(Reset()))
+  val enable = IO(Input(Bool()))
+  val addr = IO(Input(UInt(64.W)))
+  // GSIM does not support array ports on external modules. Keep these as
+  // scalar ports and reconstruct the vector in the enclosing Chisel module.
+  val data_0 = IO(Output(UInt(64.W)))
+  val data_1 = IO(Output(UInt(64.W)))
+  val data_2 = IO(Output(UInt(64.W)))
+  val data_3 = IO(Output(UInt(64.W)))
+  val data_4 = IO(Output(UInt(64.W)))
+  val data_5 = IO(Output(UInt(64.W)))
+  val data_6 = IO(Output(UInt(64.W)))
+  val data_7 = IO(Output(UInt(64.W)))
+
+  private val cppExtModule = {
+    val dataArgs = (0 until 8).map(i => s"  uint64_t& data_$i").mkString(",\n")
+    val readData = (0 until 8)
+      .map(i => s"    data_$i = trace_dyn_pt_dword_helper(addrAlign + ${i * 8});")
+      .mkString("\n")
+    val clearData = (0 until 8).map(i => s"    data_$i = 0;").mkString("\n")
+
+    s"""
+       |void TraceDynPageTableHelper(
+       |  uint8_t  reset,
+       |  uint8_t  enable,
+       |  uint64_t addr,
+       |$dataArgs
+       |) {
+       |  if (!reset && enable) {
+       |    const uint64_t addrAlign = addr & ~0x1fULL;
+       |$readData
+       |  } else {
+       |$clearData
+       |  }
+       |}
+       |""".stripMargin
+  }
+  createCppExtModule("TraceDynPageTableHelper", cppExtModule, Some("\"tracertl.h\""))
+
+  private def getVerilog: String = {
+    val dataPorts = (0 until 8).map(i => s"output [63:0] data_$i,").mkString("  ", "\n  ", "\n")
+    val readData = (0 until 8)
+      .map(i => s"assign data_$i = (!reset && enable) ? trace_dyn_pt_dword_helper(addr_align + ${i * 8}) : 64'b0;")
+      .mkString("  ", "\n  ", "\n")
+
+    s"""
+       |import "DPI-C" function longint trace_dyn_pt_dword_helper(input longint addr);
+       |
+       |module TraceDynPageTableHelper(
+       |  input             clock,
+       |  input             reset,
+       |  input             enable,
+       |$dataPorts
+       |  input      [63:0] addr
+       |);
+       |  wire [63:0] addr_align = addr & 64'hffffffffffffffe0;
+       |
+       |$readData
+       |endmodule
+       |""".stripMargin
+  }
+
+  setInline(s"$desiredName.sv", getVerilog)
+}
+
+class TraceFakeDynPageTable(implicit p: Parameters) extends TraceModule {
+  val io = IO(new Bundle {
+    val req = Flipped(ValidIO(new Bundle {
+      val paddr = UInt(PAddrBits.W)
+    }))
+    val resp = Valid(new TraceFakePageTableRespBundle)
+  })
+
+  private val helper = Module(new TraceDynPageTableHelper)
+  helper.clock := clock
+  helper.reset := reset
+  helper.enable := io.req.valid
+  helper.addr := io.req.bits.paddr
+
+  io.resp.valid := RegNext(io.req.valid)
+  val helperData = Seq(
+    helper.data_0, helper.data_1, helper.data_2, helper.data_3,
+    helper.data_4, helper.data_5, helper.data_6, helper.data_7
+  )
+  val respData = helperData.map(RegEnable(_, io.req.valid))
+  io.resp.bits.data(0) := Cat(respData(3), respData(2), respData(1), respData(0))
+  io.resp.bits.data(1) := Cat(respData(7), respData(6), respData(5), respData(4))
+  io.resp.bits.addr := RegEnable(helper.addr, io.req.valid)
+}

@@ -32,7 +32,9 @@ case class TraceRTLParameters
   TraceInstIDWidth: Int = 64,    // instruction ID width
 
   // Control flags
-  TraceOverrideTarget: Boolean = true // use trace target instead of PC+offset for branch targets
+  TraceOverrideTarget: Boolean = true, // use trace target instead of PC+offset for branch targets
+  TraceSoftL1TLB: Boolean = false,     // bypass L1 TLB misses with TraceRTL address translation
+  TraceSoftL1TLBCheck: Boolean = false // compare native L1 TLB hits against TraceRTL translation
 ) {
   def TraceBufferSize = TraceFetchWidth * 4 // 64-entry circular buffer
 }

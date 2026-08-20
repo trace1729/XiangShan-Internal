@@ -31,6 +31,7 @@ import freechips.rocketchip.tilelink._
 import xiangshan.backend.fu.{PMP, PMPChecker, PMPReqBundle, PMPRespBundle}
 import xiangshan.backend.fu.util.HasCSRConst
 import difftest._
+import xiangshan.frontend.tracertl.{TraceFakeDynPageTable, TraceFakeSatpPpn}
 
 class L2TLB()(implicit p: Parameters) extends LazyModule with HasPtwConst {
   override def shouldBeInlined: Boolean = false
@@ -79,7 +80,15 @@ class L2TLBImp(outer: L2TLB)(implicit p: Parameters) extends PtwModule(outer) wi
   difftestIO <> DontCare
 
   val sfence_tmp = DelayN(io.sfence, 1)
-  val csr_tmp    = DelayN(io.csr.tlb, 1)
+  val native_csr_tmp = DelayN(io.csr.tlb, 1)
+  val csr_tmp = WireInit(native_csr_tmp)
+  if (env.TraceRTLMode) {
+    val traceSatp = Module(new TraceFakeSatpPpn)
+    csr_tmp.satp.mode := 8.U
+    csr_tmp.satp.asid := 0.U
+    csr_tmp.satp.ppn := traceSatp.io.ppn
+    csr_tmp.satp.changed := false.B
+  }
   val sfence_num: Int = if (HasBitmapCheck) 11 else if (HasMptCheck) (9+PtwWidth) else 9
   val csr_num: Int = if (HasBitmapCheck) 10 else if (HasMptCheck) (8+PtwWidth) else 8
   val sfence_dup = Seq.fill(sfence_num) (RegNext(sfence_tmp))
@@ -551,6 +560,23 @@ class L2TLBImp(outer: L2TLB)(implicit p: Parameters) extends PtwModule(outer) wi
   mem.a.valid := mem_arb.io.out.valid && !flush && !wfiReq
   mem.a.bits.user.lift(ReqSourceKey).foreach(_ := MemReqSource.PTW.id.U)
   mem.d.ready := true.B
+
+  // Preserve native L1/L2 TLB and PTW timing, but source PTE contents from the
+  // trace-generated page table. Bitmap and MPT traffic retains real memory data.
+  val tracePageTableData = Reg(Vec(MemReqWidth, Vec(2, UInt(256.W))))
+  if (env.TraceRTLMode) {
+    val fakePageTable = Module(new TraceFakeDynPageTable)
+    val memReqIsPtw = from_llptw(mem.a.bits.source) ||
+      from_ptw(mem.a.bits.source) || from_hptw(mem.a.bits.source)
+    fakePageTable.io.req.valid := mem.a.fire && memReqIsPtw
+    fakePageTable.io.req.bits.paddr := mem.a.bits.address
+    val tracePageTableSource = RegEnable(mem.a.bits.source, mem.a.fire && memReqIsPtw)
+    when (fakePageTable.io.resp.valid) {
+      tracePageTableData(tracePageTableSource) := fakePageTable.io.resp.bits.data
+    }
+  } else {
+    tracePageTableData := DontCare
+  }
   // mem -> data buffer
   val refill_data = RegInit(VecInit.fill(blockBits / l1BusDataWidth)(0.U(l1BusDataWidth.W)))
   val refill_helper = edge.firstlastHelper(mem.d.bits, mem.d.fire)
@@ -561,14 +587,20 @@ class L2TLBImp(outer: L2TLB)(implicit p: Parameters) extends PtwModule(outer) wi
   val mem_resp_from_bitmap = from_bitmap(mem.d.bits.source)
 
   val mem_resp_from_mptc = from_mptc(mem.d.bits.source)
+  val mem_resp_is_ptw = mem_resp_from_llptw || mem_resp_from_ptw || mem_resp_from_hptw
+  val refill_beat = Mux(
+    env.TraceRTLMode.B && mem_resp_is_ptw,
+    tracePageTableData(mem.d.bits.source)(refill_helper._4),
+    mem.d.bits.data
+  )
 
   when (mem.d.valid) {
     assert(mem.d.bits.source < MemReqWidth.U)
-    refill_data(refill_helper._4) := mem.d.bits.data
+    refill_data(refill_helper._4) := refill_beat
   }
   // refill_data_tmp is the wire fork of refill_data, but one cycle earlier
   val refill_data_tmp = WireInit(refill_data)
-  refill_data_tmp(refill_helper._4) := mem.d.bits.data
+  refill_data_tmp(refill_helper._4) := refill_beat
 
   // save only one pte for each id
   // (miss queue may can't resp to tlb with low latency, it should have highest priority, but diffcult to design cache)

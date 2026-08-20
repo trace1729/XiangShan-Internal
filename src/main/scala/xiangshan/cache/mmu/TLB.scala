@@ -34,7 +34,7 @@ import utility._
 import xiangshan.backend.fu.{PMPChecker, PMPReqBundle, PMPConfig => XSPMPConfig}
 import xiangshan.backend.rob.RobPtr
 import xiangshan.backend.fu.util.HasCSRConst
-import xiangshan.frontend.tracertl.TraceFakeMMU
+import xiangshan.frontend.tracertl.{TraceFakeMMU, TraceRTLParamKey}
 import freechips.rocketchip.rocket.PMPConfig
 
 /** TLB module
@@ -50,6 +50,7 @@ class TLB(Width: Int, nRespDups: Int = 1, Block: Seq[Boolean], q: TLBParameters)
   with HasCSRConst
   with HasPerfEvents
 {
+  private val trtl = p(TraceRTLParamKey)
   val io = IO(new TlbIO(Width, nRespDups, q))
 
   val req = io.requestor.map(_.req)
@@ -303,15 +304,29 @@ class TLB(Width: Int, nRespDups: Int = 1, Block: Seq[Boolean], q: TLBParameters)
         fakeMMU.io.paddr
       }
 
-      resp(idx).valid := req_out_v(idx)
-      resp(idx).bits.miss := false.B
-      resp(idx).bits.fastMiss := false.B
-      resp(idx).bits.ptwBack := false.B
       resp(idx).bits.paddr.foreach(_ := fakePaddr(PAddrBits - 1, 0))
       resp(idx).bits.gpaddr.foreach(_ := fakePaddr)
-      resp(idx).bits.pbmt.foreach(_ := Pbmt.pma)
-      pmp(idx).valid := resp(idx).valid
-      pmp(idx).bits.addr := fakePaddr(PAddrBits - 1, 0)
+
+      if (trtl.TraceSoftL1TLB) {
+        hitVec(idx) := true.B
+        missVec(idx) := false.B
+        pmp_addr(idx) := fakePaddr(PAddrBits - 1, 0)
+        resp(idx).valid := req_out_v(idx)
+        resp(idx).bits.miss := false.B
+        resp(idx).bits.fastMiss := false.B
+        resp(idx).bits.ptwBack := false.B
+        resp(idx).bits.pbmt.foreach(_ := Pbmt.pma)
+        pmp(idx).valid := resp(idx).valid
+        pmp(idx).bits.addr := fakePaddr(PAddrBits - 1, 0)
+        io.ptw.req(idx).valid := false.B
+        io.tlbreplay(idx) := false.B
+      } else if (trtl.TraceSoftL1TLBCheck) {
+        XSError(
+          hitVec(idx) && req_out_v(idx) &&
+            fakePaddr(PAddrBits - 1, 0) =/= resp(idx).bits.paddr.head,
+          s"Trace Soft L1 TLB port $idx does not match the native TLB"
+        )
+      }
       resp(idx).bits.excp.foreach { excp =>
         excp.pf := 0.U.asTypeOf(excp.pf)
         excp.af := 0.U.asTypeOf(excp.af)
@@ -319,8 +334,6 @@ class TLB(Width: Int, nRespDups: Int = 1, Block: Seq[Boolean], q: TLBParameters)
         excp.vaNeedExt := false.B
         excp.isHyper := false.B
       }
-      io.ptw.req(idx).valid := false.B
-      io.tlbreplay(idx) := false.B
     }
   }
 

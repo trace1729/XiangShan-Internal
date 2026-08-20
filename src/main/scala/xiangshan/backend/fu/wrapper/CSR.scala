@@ -17,6 +17,7 @@ import xiangshan.backend.fu.NewCSR.CSRBundles.PrivState
 import xiangshan.backend.fu.NewCSR.CSRDefines.PrivMode
 import xiangshan.backend.rob.RobPtr
 import xiangshan.frontend.ftq.FtqPtr
+import xiangshan.frontend.tracertl.TraceFakeSatpPpn
 import CSRConst._
 
 class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
@@ -303,6 +304,15 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
 
   // pointer masking extension
   tlb.pmm := csrMod.io.tlb.pmm
+
+  if (env.TraceRTLMode) {
+    val traceSatp = Module(new TraceFakeSatpPpn)
+    tlb.satp.changed := false.B
+    tlb.satp.mode := 8.U
+    tlb.satp.asid := 0.U
+    tlb.satp.ppn := traceSatp.io.ppn
+    tlb.vsatp := 0.U.asTypeOf(tlb.vsatp)
+  }
 
   /** Since some CSR read instructions are allowed to be pipelined, ready/valid signals should be modified */
   io.in.ready := csrMod.io.in.ready // Todo: Async read imsic may block CSR
