@@ -40,14 +40,16 @@ mkdir -p /tmp/OpenXiangshan-trace-verify-gsim-build
 ln -s /tmp/OpenXiangshan-trace-verify-gsim-build build
 ```
 
-Before regenerating GSIM after a FIR change, remove
-`build/gsim-compile/model`. GSIM does not delete obsolete numbered C++
-partitions; stale files can cause duplicate definitions at link time.
+The GSIM generation rule removes `build/gsim-compile/model` before regenerating
+after a FIR change. GSIM does not delete obsolete numbered C++ partitions, so a
+clean output directory is required to prevent stale definitions from reaching
+the linker.
 
 Build with the requested command:
 
 ```bash
 export NOOP_HOME=$(pwd) && export NEMU_HOME=$(pwd)/ready-to-run && \
+set -o pipefail && \
 time make gsim GSIM=1 -j16 EMU_THREADS=8 TRACERTL_MODE=1 EMU_TRACE=1 \
   EMU_TRACE=fst WITH_DRAMSIM3=1 REMOTE=node039 EMU_OPTIMIZE=-O3 \
   2>&1 | tee make-emu.log
@@ -81,6 +83,20 @@ Run CoreMark with:
 4. After the ATS change, GSIM emitted 379 partitions while 381 older files
    remained. The link failed with multiple definitions of `SSimTop::step()`.
    Cleaning `build/gsim-compile/model` before regeneration fixed it.
+
+5. Commit `89e3005d` added `TraceSatpPpnHelper` and
+   `TraceDynPageTableHelper` with sequential inline SystemVerilog DPI bodies
+   but without GSIM C++ external-module bodies. GSIM stopped in `computeExtMod`
+   with `Implement ME!` and `Assertion '0' failed`. Both helpers now use
+   GSIM-supported combinational external-module bodies registered through
+   `createCppExtModule`. The page-table helper also flattens its eight-word
+   output vector because GSIM does not support array ports on external modules;
+   cycle timing is implemented explicitly in the surrounding Chisel modules.
+
+6. The original `gsim | tee gsim-gen-cpp.log` recipe returned `tee`'s status,
+   hiding a GSIM abort and allowing stale objects to link into a new `emu`.
+   Generation now captures stderr and runs the pipeline with `pipefail`, so an
+   abort stops the build before compilation or linking.
 
 The retained diagnostic logs are `make-emu-fail-link.log`,
 `make-emu-fail-space.log`, and `make-emu-fail-stale-model.log`.
