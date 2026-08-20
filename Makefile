@@ -51,6 +51,7 @@ CONFIG ?= DefaultConfig
 NUM_CORES ?= 1
 ISSUE ?= E.b
 CHISEL_TARGET ?= systemverilog
+TRACERTL_MODE ?= 0
 
 SUPPORT_CHI_ISSUE = B C E.b
 ifeq ($(findstring $(ISSUE), $(SUPPORT_CHI_ISSUE)),)
@@ -204,6 +205,11 @@ ifeq ($(ENABLE_SIMFRONTEND),1)
 override SIM_ARGS += --enable-simfrontend
 endif
 
+# run with TraceRTL mode
+ifeq ($(TRACERTL_MODE),1)
+override SIM_ARGS += --trace-rtl
+endif
+
 ifeq ($(GSIM), 1)
 override SIM_ARGS += --difftest-config G
 endif
@@ -345,10 +351,10 @@ reformat:
 
 # verilator simulation
 emu-mk: sim-verilog
-	$(MAKE) -C ./difftest emu-mk NUM_CORES=$(NUM_CORES) RTL_SUFFIX=$(RTL_SUFFIX)
+	$(MAKE) -C ./difftest emu-mk TRACERTL_MODE=$(TRACERTL_MODE) NUM_CORES=$(NUM_CORES) RTL_SUFFIX=$(RTL_SUFFIX) WITH_CHISELDB=$(if $(WITH_CHISELDB),$(WITH_CHISELDB),0)
 
 emu: $(call docker-deps,emu-mk)
-	$(MAKE) -C ./difftest emu NUM_CORES=$(NUM_CORES) RTL_SUFFIX=$(RTL_SUFFIX) OBJCACHE=$(OBJCACHE)
+	$(MAKE) -C ./difftest emu TRACERTL_MODE=$(TRACERTL_MODE) NUM_CORES=$(NUM_CORES) RTL_SUFFIX=$(RTL_SUFFIX) WITH_CHISELDB=$(if $(WITH_CHISELDB),$(WITH_CHISELDB),0) OBJCACHE=$(OBJCACHE)
 
 gsim: sim-verilog
 	$(MAKE) -C ./difftest emu GSIM=1 SIM_TOP=SimTop DESIGN_DIR=$(NOOP_HOME) NUM_CORES=$(NUM_CORES) RTL_SUFFIX=$(RTL_SUFFIX)
