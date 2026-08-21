@@ -1,0 +1,450 @@
+/** *************************************************************************************
+ * Copyright (c) 2020-2021 Institute of Computing Technology, Chinese Academy of Sciences
+ * Copyright (c) 2020-2021 Peng Cheng Laboratory
+ *
+ * XiangShan is licensed under Mulan PSL v2.
+ * You can use this software according to the terms and conditions of the Mulan PSL v2.
+ * You may obtain a copy of Mulan PSL v2 at:
+ *          http://license.coscl.org.cn/MulanPSL2
+ *
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ *
+ * See the Mulan PSL v2 for more details.
+ * ************************************************************************************* */
+package xiangshan.frontend.tracertl
+
+import chisel3._
+import chisel3.experimental.ExtModule
+import chisel3.util._
+import difftest.DifftestModule.createCppExtModule
+import org.chipsalliance.cde.config.Parameters
+
+class TraceReaderHelper(width: Int)(implicit p: Parameters)
+    extends ExtModule
+    with HasExtModuleInline {
+  val clock = IO(Input(Clock()))
+  val reset = IO(Input(Reset()))
+  val enable = IO(Input(Bool()))
+
+  private val fields = new TraceInstrInnerBundle().elements.toSeq.reverse
+  private val fieldNames = fields.map(_._1)
+  private val fieldWidths = fields.map(_._2.getWidth)
+  private def field(name: String): Data = fields.find(_._1 == name).get._2
+  private def outputPorts(name: String, widthBits: Int): Seq[UInt] = {
+    Seq.tabulate(width) { i =>
+      IO(Output(UInt(widthBits.W))).suggestName(s"insts_${i}_${name}")
+    }
+  }
+
+  val insts_pcVA = outputPorts("pcVA", field("pcVA").getWidth)
+  val insts_pcPA = outputPorts("pcPA", field("pcPA").getWidth)
+  val insts_memoryAddrVA = outputPorts("memoryAddrVA", field("memoryAddrVA").getWidth)
+  val insts_memoryAddrPA = outputPorts("memoryAddrPA", field("memoryAddrPA").getWidth)
+  val insts_target = outputPorts("target", field("target").getWidth)
+  val insts_inst = outputPorts("inst", field("inst").getWidth)
+  val insts_memoryType = outputPorts("memoryType", field("memoryType").getWidth)
+  val insts_memorySize = outputPorts("memorySize", field("memorySize").getWidth)
+  val insts_branchType = outputPorts("branchType", field("branchType").getWidth)
+  val insts_branchTaken = outputPorts("branchTaken", field("branchTaken").getWidth)
+  val insts_exception = outputPorts("exception", field("exception").getWidth)
+  val insts_fastSimulation = outputPorts("fastSimulation", field("fastSimulation").getWidth)
+  val insts_InstID = outputPorts("InstID", field("InstID").getWidth)
+
+  private def cppType(width: Int, isOutput: Boolean): String = {
+    val base = width match {
+      case 1 => "uint8_t"
+      case w if w <= 8 => "uint8_t"
+      case w if w <= 16 => "uint16_t"
+      case w if w <= 32 => "uint32_t"
+      case w if w <= 64 => "uint64_t"
+    }
+    s"$base${if (isOutput) "&" else ""}"
+  }
+
+  private def cppFieldParams: Seq[String] = {
+    fieldNames.zip(fieldWidths).flatMap { case (name, fieldWidth) =>
+      (0 until width).map { i =>
+        f"${cppType(fieldWidth, isOutput = true)}%-10s insts_${i}_${name}"
+      }
+    }
+  }
+
+  private val cppExtModule =
+    s"""
+       |void TraceReaderHelper(
+       |  uint8_t   reset,
+       |  uint8_t   enable,
+       |  ${cppFieldParams.mkString(",\n  ")}
+       |) {
+       |${(0 until width).map { i =>
+         val args = Seq(
+           s"&insts_${i}_pcVA",
+           s"&insts_${i}_pcPA",
+           s"&insts_${i}_memoryAddrVA",
+           s"&insts_${i}_memoryAddrPA",
+           s"&insts_${i}_target",
+           s"&insts_${i}_inst",
+           s"&insts_${i}_memoryType",
+           s"&insts_${i}_memorySize",
+           s"&insts_${i}_branchType",
+           s"&insts_${i}_branchTaken",
+           s"&insts_${i}_exception",
+           s"&insts_${i}_fastSimulation",
+           s"&insts_${i}_InstID",
+           i.toString
+         ).mkString(", ")
+         val zero = fieldNames.map(name => s"    insts_${i}_${name} = 0;").mkString("\n")
+         s"""  if (!reset && enable) {
+            |    trace_read_one_instr($args);
+            |  } else {
+            |$zero
+            |  }""".stripMargin
+       }.mkString("\n")}
+       |}
+       |""".stripMargin
+  createCppExtModule("TraceReaderHelper", cppExtModule, Some("\"tracertl.h\""))
+
+  private def getVerilog: String = {
+    val nameList = fieldNames
+    val sizeList = fieldWidths
+
+    def genElementPort(size: Int, baseName: String): String = {
+      (0 until width)
+        .map(i => s"output [${size - 1}:0] insts_${i}_${baseName},")
+        .mkString("  ", "\n  ", "\n")
+    }
+
+    def genModulePort: String = {
+      s"""
+         |  input  clock,
+         |  input  reset,
+         |${nameList.zip(sizeList).map { case (name, size) => genElementPort(size, name) }.mkString}
+         |  input  enable
+         |""".stripMargin
+    }
+
+    def genLogicDeclare: String = {
+      (0 until width).map { idx =>
+        nameList.zip(sizeList).map { case (name, size) =>
+          s"logic [${size - 1}:0] logicInsts_${idx}_${name};"
+        }.mkString("  ", "\n  ", "\n")
+      }.mkString
+    }
+
+    def fromLogicToIO: String = {
+      (0 until width).map { idx =>
+        nameList.map { name =>
+          s"assign insts_${idx}_${name} = logicInsts_${idx}_${name};"
+        }.mkString("  ", "\n  ", "\n")
+      }.mkString
+    }
+
+    def funcDeclare: String = {
+      s"""
+         |import "DPI-C" function void trace_read_one_instr(
+         |  output longint pc_va,
+         |  output longint pc_pa,
+         |  output longint memory_addr_va,
+         |  output longint memory_addr_pa,
+         |  output longint target,
+         |  output int instr,
+         |  output byte memory_type,
+         |  output byte memory_size,
+         |  output byte branch_type,
+         |  output byte branch_taken,
+         |  output byte exception,
+         |  output byte fast_simulation,
+         |  output longint InstID,
+         |  input  byte idx
+         |);
+         |""".stripMargin
+    }
+
+    def callDPIC(destName: String): String = {
+      (0 until width).map { i =>
+        val assignTrace =
+          s"""
+             |    trace_read_one_instr(
+             |      ${destName}_${i}_pcVA, ${destName}_${i}_pcPA,
+             |      ${destName}_${i}_memoryAddrVA, ${destName}_${i}_memoryAddrPA,
+             |      ${destName}_${i}_target, ${destName}_${i}_inst,
+             |      ${destName}_${i}_memoryType, ${destName}_${i}_memorySize,
+             |      ${destName}_${i}_branchType, ${destName}_${i}_branchTaken,
+             |      ${destName}_${i}_exception, ${destName}_${i}_fastSimulation,
+             |      ${destName}_${i}_InstID,
+             |      $i);
+             |""".stripMargin
+
+        val assignDummy = nameList.map { name =>
+          s"${destName}_${i}_${name} = 0;"
+        }.mkString("    ", "\n    ", "\n")
+
+        s"""
+           |always @(negedge clock) begin
+           |  if (!reset && enable) begin
+           |$assignTrace
+           |  end else begin
+           |$assignDummy
+           |  end
+           |end
+           |""".stripMargin
+      }.mkString("\n")
+    }
+
+    s"""
+       |$funcDeclare
+       |
+       |module TraceReaderHelper(
+       |$genModulePort
+       |);
+       |
+       |$genLogicDeclare
+       |${callDPIC("logicInsts")}
+       |$fromLogicToIO
+       |
+       |endmodule
+       |""".stripMargin
+  }
+
+  setInline(s"$desiredName.sv", getVerilog)
+}
+
+class TraceRedirectHelper extends ExtModule with HasExtModuleInline {
+  val clock = IO(Input(Clock()))
+  val reset = IO(Input(Reset()))
+  val enable = IO(Input(Bool()))
+  val InstID = IO(Input(UInt(64.W)))
+
+  private val cppExtModule =
+    """
+      |void TraceRedirectHelper(
+      |  uint8_t  reset,
+      |  uint8_t  enable,
+      |  uint64_t InstID
+      |) {
+      |  if (enable && !reset) trace_redirect(InstID);
+      |}
+      |""".stripMargin
+  createCppExtModule("TraceRedirectHelper", cppExtModule, Some("\"tracertl.h\""))
+
+  private def getVerilog: String = {
+    s"""
+       |import "DPI-C" function void trace_redirect(input longint InstID);
+       |
+       |module TraceRedirectHelper(
+       |  input clock,
+       |  input reset,
+       |  input enable,
+       |  input [63:0] InstID
+       |);
+       |
+       |  always @(negedge clock) begin
+       |    if (enable && !reset) begin
+       |      trace_redirect(InstID);
+       |    end
+       |  end
+       |endmodule
+       |""".stripMargin
+  }
+
+  setInline(s"$desiredName.sv", getVerilog)
+}
+
+class TraceCollectorHelper(width: Int) extends ExtModule with HasExtModuleInline {
+  val clock = IO(Input(Clock()))
+  val reset = IO(Input(Reset()))
+
+  val enable = IO(Input(Vec(width, Bool())))
+  val pc = IO(Input(Vec(width, UInt(64.W))))
+  val inst = IO(Input(Vec(width, UInt(32.W))))
+  val instNum = IO(Input(Vec(width, UInt(8.W))))
+
+  private def getVerilog: String = {
+    def genPort(size: Int, baseName: String): String = {
+      (0 until width)
+        .map(i => s"input [${size - 1}:0] ${baseName}_${i},")
+        .mkString("  ", "\n  ", "\n")
+    }
+
+    def genBoolPort(baseName: String): String = {
+      (0 until width)
+        .map(i => s"input ${baseName}_${i},")
+        .mkString("  ", "\n  ", "\n")
+    }
+
+    val callDPIC = (0 until width)
+      .map(i =>
+        s"""
+           |    if (enable_${i}) begin
+           |      trace_collect_commit(pc_${i}, inst_${i}, instNum_${i}, $i);
+           |    end
+           |""".stripMargin)
+      .mkString
+
+    s"""
+       |import "DPI-C" function void trace_collect_commit(
+       |  input longint pc,
+       |  input int inst,
+       |  input byte instNum,
+       |  input byte idx
+       |);
+       |
+       |module TraceCollectorHelper(
+       |  input  clock,
+       |${genBoolPort("enable")}
+       |${genPort(64, "pc")}
+       |${genPort(32, "inst")}
+       |${genPort(8, "instNum")}
+       |  input  reset
+       |);
+       |
+       |  always @(negedge clock) begin
+       |    if (!reset) begin
+       |$callDPIC
+       |    end
+       |  end
+       |endmodule
+       |""".stripMargin
+  }
+
+  setInline(s"$desiredName.sv", getVerilog)
+}
+
+class TraceDriveCollectorHelper(width: Int) extends ExtModule with HasExtModuleInline {
+  val clock = IO(Input(Clock()))
+  val reset = IO(Input(Reset()))
+
+  val enable = IO(Input(Vec(width, Bool())))
+  val pc = IO(Input(Vec(width, UInt(64.W))))
+  val inst = IO(Input(Vec(width, UInt(32.W))))
+
+  private def getVerilog: String = {
+    def genPort(size: Int, baseName: String): String = {
+      (0 until width)
+        .map(i => s"input [${size - 1}:0] ${baseName}_${i},")
+        .mkString("  ", "\n  ", "\n")
+    }
+
+    def genBoolPort(baseName: String): String = {
+      (0 until width)
+        .map(i => s"input ${baseName}_${i},")
+        .mkString("  ", "\n  ", "\n")
+    }
+
+    val callDPIC = (0 until width)
+      .map(i =>
+        s"""
+           |    if (enable_${i}) begin
+           |      trace_collect_drive(pc_${i}, inst_${i}, $i);
+           |    end
+           |""".stripMargin)
+      .mkString
+
+    s"""
+       |import "DPI-C" function void trace_collect_drive(
+       |  input longint pc,
+       |  input int inst,
+       |  input byte idx
+       |);
+       |
+       |module TraceDriveCollectorHelper(
+       |  input  clock,
+       |${genBoolPort("enable")}
+       |${genPort(64, "pc")}
+       |${genPort(32, "inst")}
+       |  input  reset
+       |);
+       |
+       |  always @(negedge clock) begin
+       |    if (!reset) begin
+       |$callDPIC
+       |    end
+       |  end
+       |endmodule
+       |""".stripMargin
+  }
+
+  setInline(s"$desiredName.sv", getVerilog)
+}
+
+class TraceATSHelper extends ExtModule with HasExtModuleInline {
+  val clock = IO(Input(Clock()))
+  val reset = IO(Input(Reset()))
+  val valid = IO(Input(Bool()))
+  val asid = IO(Input(UInt(16.W)))
+  val vmid = IO(Input(UInt(16.W)))
+  val vaddr = IO(Input(UInt(64.W)))
+  val paddr = IO(Output(UInt(64.W)))
+  val hit = IO(Output(Bool()))
+
+  private def getVerilog: String = {
+    s"""
+       |import "DPI-C" function longint trace_tlb_ats(
+       |  input  longint vaddr,
+       |  input  shortint asid,
+       |  input  shortint vmid
+       |);
+       |import "DPI-C" function byte trace_tlb_ats_hit(
+       |  input  longint vaddr,
+       |  input  shortint asid,
+       |  input  shortint vmid
+       |);
+       |
+       |module TraceATSHelper(
+       |  input              clock,
+       |  input              reset,
+       |  input              valid,
+       |  input       [15:0] asid,
+       |  input       [15:0] vmid,
+       |  input       [63:0] vaddr,
+       |  output      [63:0] paddr,
+       |  output             hit
+       |);
+       |
+       |  logic [63:0] logic_paddr;
+       |  logic        logic_hit;
+       |  reg [63:0]   reg_paddr;
+       |  reg          reg_hit;
+       |
+       |  always @(negedge clock) begin
+       |    if (!reset && valid) begin
+       |      logic_hit   <= trace_tlb_ats_hit(vaddr, asid, vmid);
+       |      logic_paddr <= trace_tlb_ats(vaddr, asid, vmid);
+       |    end else begin
+       |      logic_hit   <= 0;
+       |      logic_paddr <= 0;
+       |    end
+       |  end
+       |
+       |  always @(posedge clock) begin
+       |    if (!reset && valid) begin
+       |      reg_paddr <= logic_paddr;
+       |      reg_hit   <= logic_hit;
+       |    end
+       |  end
+       |
+       |  assign paddr = reg_paddr;
+       |  assign hit   = reg_hit;
+       |endmodule
+       |""".stripMargin
+  }
+
+  setInline(s"$desiredName.sv", getVerilog)
+}
+
+class TraceFakeMMU(implicit p: Parameters) extends TraceModule {
+  val io = IO(new TraceATSBundle)
+
+  val helper = Module(new TraceATSHelper)
+  helper.clock := clock
+  helper.reset := reset
+  helper.valid := io.valid
+  helper.vaddr := io.vaddr
+  helper.asid := 0.U
+  helper.vmid := 0.U
+
+  io.paddr := helper.paddr
+  io.hit := helper.hit
+}
