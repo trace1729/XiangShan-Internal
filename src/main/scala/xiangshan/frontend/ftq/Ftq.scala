@@ -308,6 +308,7 @@ class Ftq(implicit p: Parameters) extends FtqModule
     req.valid               := (if (i == 0) true.B else rawTwoFetchValid)
     req.startVAddr          := fetchReq(i).startVAddr
     req.nextLineVAddr       := fetchReq(i).nextLineVAddr
+    req.nextStartVAddr      := entryQueue(fetchPtr(i + 1).value).startPc
     req.takenCfiOffset      := fetchReq(i).takenCfiOffset
     req.ftqIdx              := fetchPtr(i)
     req.vSetIdx             := fetchReq(i).vSetIdx
@@ -333,8 +334,7 @@ class Ftq(implicit p: Parameters) extends FtqModule
   }
 
   io.toIfu.redirect.valid := backendRedirect.valid
-  // TODO: only valid should be needed
-  io.toIfu.redirect.bits := DontCare
+  io.toIfu.redirect.bits := backendRedirect.bits
 
   io.toBpu.redirect.valid          := redirect.valid
   io.toBpu.redirect.bits.cfiPc     := getCfiPcFromOffset(PrunedAddrInit(redirect.bits.pc), redirect.bits.ftqOffset)

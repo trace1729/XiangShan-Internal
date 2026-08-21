@@ -390,6 +390,7 @@ class ICacheMainPipe(implicit p: Parameters) extends ICacheModule
   io.toIfu.req.bits.zipWithIndex.foreach { case (req, i) =>
     req.valid            := s1_req(i).valid
     req.startVAddr       := s1_req(i).startVAddr
+    req.nextStartVAddr   := s1_req(i).nextStartVAddr
     req.ftqIdx           := s1_req(i).ftqIdx
     req.takenCfiOffset   := s1_req(i).takenCfiOffset
     req.range            := Fill(FetchBlockInstNum, 1.U(1.W)) >> (~s1_req(i).takenCfiOffset.bits).asUInt

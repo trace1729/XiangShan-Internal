@@ -32,6 +32,7 @@ import xiangshan.TopDownCounters
 import xiangshan.frontend.BackendRedirectTopdown
 import xiangshan.frontend.FetchToIBuffer
 import xiangshan.frontend.FrontendTopDownBundle
+import xiangshan.frontend.tracertl.TraceDriveCollector
 
 class IBuffer(implicit p: Parameters) extends IBufferModule with HasCircularQueuePtrHelper with HasPerfEvents {
   class IBufferIO extends Bundle {
@@ -466,6 +467,17 @@ class IBuffer(implicit p: Parameters) extends IBufferModule with HasCircularQueu
   XSError(isBefore(enqPtr, deqPtr) && !isFull(enqPtr, deqPtr), "\ndeqPtr is older than enqPtr!\n")
 
   XSDebug(io.flush, "IBuffer Flushed\n")
+
+  if (env.TraceRTLMode) {
+    val traceDriveCollector = Module(new TraceDriveCollector)
+    traceDriveCollector.io.in.zip(io.out).foreach { case (trace, out) =>
+      trace.valid     := out.fire && !io.flush
+      trace.bits.inst := out.bits.traceInfo.inst
+      trace.bits.pc   := out.bits.pc
+      XSError(out.fire && out.bits.pc =/= out.bits.traceInfo.pcVA, "TraceIBuffer: pc mismatch")
+      dontTouch(out.bits.traceInfo)
+    }
+  }
 
   XSDebug(io.in.fire, "Enque:\n")
   XSDebug(io.in.fire, p"MASK=${Binary(io.in.bits.valid)}\n")

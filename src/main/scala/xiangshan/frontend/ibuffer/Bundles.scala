@@ -30,6 +30,7 @@ import xiangshan.frontend.FetchToIBuffer
 import xiangshan.frontend.PreDecodeInfo
 import xiangshan.frontend.PrunedAddr
 import xiangshan.frontend.ftq.FtqPtr
+import xiangshan.frontend.tracertl.TraceInstrBundle
 
 // FIXME: these ptrs have ambiguous names
 // FIXME: if these ptrs are never used outside ibuffer, we can move them to class IBuffer as private inner classes
@@ -57,6 +58,7 @@ class IBufEntry(implicit p: Parameters) extends IBufferBundle {
   val instrEndOffset:   UInt       = UInt(FetchBlockInstOffsetWidth.W)
   val triggered:        UInt       = TriggerAction()
   val isLastInFtqEntry: Bool       = Bool()
+  val traceInfo:        TraceInstrBundle = new TraceInstrBundle
 
   val debug_seqNum: InstSeqNum = InstSeqNum()
 
@@ -71,6 +73,7 @@ class IBufEntry(implicit p: Parameters) extends IBufferBundle {
     instrEndOffset   := fetch.instrEndOffset(i).offset
     triggered        := fetch.triggered(i)
     isLastInFtqEntry := fetch.isLastInFtqEntry(i)
+    traceInfo        := fetch.traceInfo(i)
     debug_seqNum     := fetch.debug_seqNum(i)
     this
   }
@@ -91,6 +94,7 @@ class IBufEntry(implicit p: Parameters) extends IBufferBundle {
     result.isBackendException := exception.isBackendException
     result.triggered          := triggered
     result.isLastInFtqEntry   := isLastInFtqEntry
+    result.traceInfo          := traceInfo
     result.debug_seqNum       := debug_seqNum
     result.instrEndOffset     := instrEndOffset
     result
@@ -126,6 +130,7 @@ class IBufOutEntry(implicit p: Parameters) extends IBufferBundle {
   val isBackendException: Bool          = Bool()
   val triggered:          UInt          = TriggerAction()
   val isLastInFtqEntry:   Bool          = Bool()
+  val traceInfo:          TraceInstrBundle = new TraceInstrBundle
   val instrEndOffset:     UInt          = UInt(FetchBlockInstOffsetWidth.W)
   val debug_seqNum:       InstSeqNum    = InstSeqNum()
 
@@ -154,6 +159,7 @@ class IBufOutEntry(implicit p: Parameters) extends IBufferBundle {
     cf.ftqPtr                                        := ftqPtr
     cf.ftqOffset                                     := instrEndOffset
     cf.isLastInFtqEntry                              := isLastInFtqEntry
+    cf.traceInfo                                     := traceInfo
     cf.debug_seqNum                                  := debug_seqNum
     cf
   }

@@ -220,6 +220,7 @@ class ICacheMeta(implicit p: Parameters) extends ICacheBundle {
 class MainPipeToIfuReq(implicit p: Parameters) extends ICacheBundle {
   val valid:          Bool        = Bool()
   val startVAddr:     PrunedAddr  = PrunedAddr(VAddrBits)
+  val nextStartVAddr: PrunedAddr  = PrunedAddr(VAddrBits)
   val ftqIdx:         FtqPtr      = new FtqPtr
   val takenCfiOffset: Valid[UInt] = Valid(UInt(CfiPositionWidth.W))
   val range:          UInt        = UInt(FetchBlockInstNum.W)

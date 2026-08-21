@@ -66,6 +66,7 @@ class FetchBlock(implicit p: Parameters) extends IfuBundle {
   val valid:          Bool        = Bool()
   val ftqIdx:         FtqPtr      = new FtqPtr
   val startVAddr:     PrunedAddr  = PrunedAddr(VAddrBits)
+  val nextStartVAddr: PrunedAddr  = PrunedAddr(VAddrBits)
   val takenCfiOffset: Valid[UInt] = Valid(UInt(FetchBlockInstOffsetWidth.W))
   val range:          UInt        = UInt(FetchBlockInstNum.W)
   val size:           UInt        = UInt(log2Ceil(FetchBlockInstNum + 1).W)
@@ -78,6 +79,7 @@ class FetchBlock(implicit p: Parameters) extends IfuBundle {
     valid            := req.valid
     ftqIdx           := req.ftqIdx
     startVAddr       := req.startVAddr
+    nextStartVAddr   := req.nextStartVAddr
     takenCfiOffset   := req.takenCfiOffset
     range            := req.range
     size             := req.size
