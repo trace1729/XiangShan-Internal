@@ -34,6 +34,7 @@ import xiangshan.backend.rename.{Rename, RenameTableWrapper, SnapshotGenerator}
 import xiangshan.backend.rob.{Rob, RobCSRIO, RobCoreTopDownIO, RobDebugRollingIO, RobLsqIO, RobPtr}
 import xiangshan.frontend.ftq.{FtqPtr, FtqRead, HasFtqParameters}
 import xiangshan.frontend.PrunedAddr
+import xiangshan.frontend.tracertl.TraceRTLDontCareValue
 import xiangshan.mem.{LqPtr, LsqEnqCtrl, LsqEnqIO, SqPtr, ToLsqEnqCtrl}
 import xiangshan.backend.issue.{FpScheduler, IntScheduler, VecScheduler}
 import xiangshan.backend.trace._
@@ -137,6 +138,9 @@ class CtrlBlockImp(
     val delayed = Wire(Valid(new WriteBackRobBundle(x.bits.params, backendParams)))
     delayed.valid := GatedValidRegNext(valid && !killedByOlder)
     delayed.bits := RegEnable(x.bits, x.valid)
+    if (env.TraceRTLMode) {
+      delayed.bits.exceptionVec := 0.U.asTypeOf(delayed.bits.exceptionVec)
+    }
     delayed.bits.perfDebugInfo.foreach(_.writebackTime := GTimer())
     delayed
   }).toSeq
@@ -405,9 +409,9 @@ class CtrlBlockImp(
   val s4_trapTargetIGPF = s4_csrIsTrap && s4_trapTargetFromCsr.raiseIGPF
   when (s5_flushFromRobValid) {
     io.frontend.toFtq.redirect.bits.target := RegEnable(flushTarget, s4_flushFromRobValidAhead)
-    io.frontend.toFtq.redirect.bits.backendIAF := RegEnable(s4_trapTargetIAF, s4_flushFromRobValidAhead)
-    io.frontend.toFtq.redirect.bits.backendIPF := RegEnable(s4_trapTargetIPF, s4_flushFromRobValidAhead)
-    io.frontend.toFtq.redirect.bits.backendIGPF := RegEnable(s4_trapTargetIGPF, s4_flushFromRobValidAhead)
+    io.frontend.toFtq.redirect.bits.backendIAF := TraceRTLDontCareValue(RegEnable(s4_trapTargetIAF, s4_flushFromRobValidAhead))
+    io.frontend.toFtq.redirect.bits.backendIPF := TraceRTLDontCareValue(RegEnable(s4_trapTargetIPF, s4_flushFromRobValidAhead))
+    io.frontend.toFtq.redirect.bits.backendIGPF := TraceRTLDontCareValue(RegEnable(s4_trapTargetIGPF, s4_flushFromRobValidAhead))
   }
 
   for (i <- 0 until DecodeWidth) {
@@ -786,6 +790,10 @@ class CtrlBlockImp(
   rob.io.redirect := s1_s3_redirect
   rob.io.writeback := delayedNotFlushedWriteBack
   rob.io.exuWriteback := delayedWriteBack
+  if (env.TraceRTLMode) {
+    rob.io.writeback.foreach(wb => wb.bits.exceptionVec := 0.U.asTypeOf(wb.bits.exceptionVec))
+    rob.io.exuWriteback.foreach(wb => wb.bits.exceptionVec := 0.U.asTypeOf(wb.bits.exceptionVec))
+  }
   rob.io.writebackNums := VecInit(delayedNotFlushedWriteBackNums)
   rob.io.writebackNeedFlush := delayedNotFlushedWriteBackNeedFlush
   rob.io.readGPAMemData := gpaMem.io.exceptionReadData

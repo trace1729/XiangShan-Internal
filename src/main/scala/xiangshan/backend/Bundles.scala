@@ -22,6 +22,7 @@ import xiangshan.backend.rob.RobPtr
 import xiangshan.backend.trace._
 import xiangshan.frontend.ftq.FtqPtr
 import xiangshan.frontend.bpu.BranchAttribute
+import xiangshan.frontend.tracertl.TraceInstrBundle
 import xiangshan.mem.{LqPtr, SqPtr}
 import xiangshan.mem.VecMissalignedDebugBundle
 
@@ -116,6 +117,7 @@ object Bundles {
     val ftqPtr = new FtqPtr
     val ftqOffset = UInt(FetchBlockInstOffsetWidth.W)
     val isLastInFtqEntry = Bool()
+    val traceInfo = new TraceInstrBundle
     val instr = UInt(32.W)
     val debug = OptionWrapper(backendParams.debugEn, new DecodeInUopDebug())
 
@@ -145,6 +147,7 @@ object Bundles {
     val ftqPtr = new FtqPtr
     val ftqOffset = UInt(FetchBlockInstOffsetWidth.W)
     val isLastInFtqEntry = Bool()
+    val traceInfo = new TraceInstrBundle
     // DecodeOutUop also needs instr because the fusion decoder uses it.
     val instr = UInt(32.W)
     // commitType will be used in rob to calculate lsq commit count
@@ -240,6 +243,7 @@ object Bundles {
     val ftqPtr = new FtqPtr
     val ftqOffset = UInt(FetchBlockInstOffsetWidth.W)
     val commitType = CommitType()
+    val traceInfo = new TraceInstrBundle
 
     val srcType = Vec(numSrc, SrcType())
     val ldest = UInt(LogicRegsWidth.W)
@@ -364,6 +368,7 @@ object Bundles {
     val robIdx = new RobPtr
     val numLsElem = NumLsElem()
     val rasAction = BranchAttribute.RasAction()
+    val traceInfo = new TraceInstrBundle
     // for mdp
     val storeSetHit = Bool()
     val waitForRobIdx = new RobPtr
@@ -400,6 +405,7 @@ object Bundles {
     val predTaken  = Option.when(params.needTaken)(Bool())
     val ftqPtr     = Option.when(params.needFtqPtr)(new FtqPtr)
     val ftqOffset  = Option.when(params.needFtqPtr)(UInt(FetchBlockInstOffsetWidth.W))
+    val traceInfo  = new TraceInstrBundle
     // from decode
     val srcType  = Vec(numSrc, SrcType())
     val fuType   = FuType()
@@ -450,6 +456,7 @@ object Bundles {
     val isRVC      = Option.when(params.needIsRVC)(Bool())
     val fixedTaken = Option.when(params.needTaken)(Bool())
     val predTaken  = Option.when(params.needTaken)(Bool())
+    val traceInfo  = new TraceInstrBundle
     // from decode
     val fuOpType = FuOpType()
     val selImm   = Option.when(params.needImm)(SelImm())
@@ -479,6 +486,7 @@ object Bundles {
     val isRVC      = Option.when(params.needIsRVC || params.aluNeedPc)(Bool())
     val fixedTaken = Option.when(params.needTaken)(Bool())
     val predTaken  = Option.when(params.needTaken)(Bool())
+    val traceInfo  = new TraceInstrBundle
     // from decode
     val fuOpType = FuOpType()
     val selImm   = Option.when(params.needImm)(SelImm())
@@ -511,6 +519,7 @@ object Bundles {
     // from frontend
     val ftqPtr     = Option.when(params.needFtqPtr)(new FtqPtr)
     val ftqOffset  = Option.when(params.needFtqPtrOffset)(UInt(FetchBlockInstOffsetWidth.W))
+    val traceInfo  = new TraceInstrBundle
     // from decode
     val srcType  = Vec(numSrc, SrcType())
     val fuType   = FuType()
@@ -559,6 +568,7 @@ object Bundles {
     val ftqOffset       = UInt(FetchBlockInstOffsetWidth.W)
     val ftqLastOffset   = UInt(FetchBlockInstOffsetWidth.W) // store ftqoffset before channge in rename
     val stdwriteNeed    = Bool()
+    val traceInfo       = new TraceInstrBundle
     // passed from DecodeOutUop
     val srcType         = Vec(numSrc, SrcType())
     val ldest           = UInt(LogicRegsWidth.W)
@@ -949,6 +959,7 @@ object Bundles {
     val flushPipe      = Option.when(exuParams.flushPipe)    (Bool())
     val ftqIdx         = Option.when(exuParams.needFtqPtr)   (new FtqPtr)
     val ftqOffset      = Option.when(exuParams.needFtqPtrOffset)(UInt(FetchBlockInstOffsetWidth.W))
+    val traceInfo      = new TraceInstrBundle
     // dataSources are used in issueQueue to generate regfile Ren
     val dataSources    = Vec(exuParams.numRegSrc, DataSource())
     val exuSources     = Option.when(exuParams.isIQWakeUpSink)(Vec(exuParams.numRegSrc, ExuSource(exuParams)))
@@ -981,6 +992,7 @@ object Bundles {
     val flushPipe      = Option.when(exuParams.flushPipe)    (Bool())
     val ftqIdx         = Option.when(exuParams.needFtqPtr)   (new FtqPtr)
     val ftqOffset      = Option.when(exuParams.needFtqPtrOffset)(UInt(FetchBlockInstOffsetWidth.W))
+    val traceInfo      = new TraceInstrBundle
     val dataSources    = Vec(exuParams.numRegSrc, DataSource())
     val exuSources     = Option.when(exuParams.isIQWakeUpSink)(Vec(exuParams.numRegSrc, ExuSource(exuParams)))
     val loadDependency = OptionWrapper(exuParams.needLoadDependency, Vec(LoadPipelineWidth, UInt(LoadDependencyWidth.W)))
@@ -1118,6 +1130,7 @@ object Bundles {
     val ftqIdx        = if (params.needFtqPtr)    Some(new FtqPtr)                    else None
     val ftqOffset     = if (params.needFtqPtrOffset) Some(UInt(FetchBlockInstOffsetWidth.W))  else None
     val predictInfo   = if (params.needPdInfo)  Some(new PredictInfo) else None
+    val traceInfo     = new TraceInstrBundle
     val loadWaitBit    = OptionWrapper(params.hasLoadExu, Bool())
     val waitForRobIdx  = OptionWrapper(params.hasLoadExu, new RobPtr) // store set predicted previous store robIdx
     val storeSetHit    = OptionWrapper(params.hasLoadExu || params.hasStoreAddrExu, Bool()) // inst has been allocated an store set
@@ -1174,6 +1187,7 @@ object Bundles {
       this.ssid          .foreach(_ := source.ssid.get)
       this.lqIdx         .foreach(_ := source.lqIdx.get)
       this.sqIdx         .foreach(_ := source.sqIdx.get)
+      this.traceInfo                := source.traceInfo
     }
 
     def toDynInst(): DynInst = {
@@ -1201,6 +1215,7 @@ object Bundles {
       uop.sqIdx          := this.sqIdx.getOrElse(0.U.asTypeOf(new SqPtr))
       uop.ftqPtr         := this.ftqIdx.getOrElse(0.U.asTypeOf(new FtqPtr))
       uop.ftqOffset      := this.ftqOffset.getOrElse(0.U)
+      uop.traceInfo      := this.traceInfo
       uop.perfDebugInfo      := this.perfDebugInfo.getOrElse(0.U.asTypeOf(new PerfDebugInfo))
       uop.debug_seqNum   := this.debug_seqNum.getOrElse(0.U.asTypeOf(InstSeqNum()))
       uop.vpu            := this.vpu.getOrElse(0.U.asTypeOf(new VPUCtrlSignals))
@@ -1235,6 +1250,7 @@ object Bundles {
     val ftqIdx         = Option.when(params.needFtqPtr)(new FtqPtr)
     val ftqOffset      = Option.when(params.needFtqPtrOffset)(UInt(FetchBlockInstOffsetWidth.W))
     val predictInfo    = Option.when(params.needPdInfo)(new PredictInfo)
+    val traceInfo      = new TraceInstrBundle
     val dataSources    = Vec(params.numRegSrc, DataSource())
     val exuSources     = Option.when(params.isIQWakeUpSink)(Vec(params.numRegSrc, ExuSource(params)))
     val loadDependency = Option.when(params.needLoadDependency)(Vec(LoadPipelineWidth, UInt(LoadDependencyWidth.W)))
@@ -1682,6 +1698,7 @@ class ExuOutputVLoad(val params: ExeUnitParams)(implicit val p: Parameters) exte
     val vls = Bool()
     val trigger = TriggerAction()
     val isForVSnonLeafPTE = Bool()
+    val traceInfo = new TraceInstrBundle
   }
 
   object UopIdx {

@@ -22,6 +22,7 @@ import chisel3.util._
 import utility._
 import utils._
 import xiangshan._
+import xiangshan.ExceptionNO.illegalInstr
 import xiangshan.TopDownCounters._
 import xiangshan.backend.rename.RatReadPort
 import xiangshan.backend.Bundles._
@@ -31,6 +32,7 @@ import xiangshan.backend.{PipelineStallReason, StoreBubbleReason}
 import xiangshan.backend.fu.wrapper.CSRToDecode
 import yunsuan.VpermType
 import xiangshan.frontend.ftq.FtqPtr
+import xiangshan.frontend.tracertl.TraceRTLChoose
 
 class DecodeStageIO(implicit p: Parameters) extends XSBundle {
   // params alias
@@ -242,7 +244,7 @@ class DecodeStage(implicit p: Parameters) extends XSModule
    * Note that finalDecodedInst is generated in order.
    */
   io.out.zipWithIndex.foreach { case (inst, i) =>
-    inst.valid := finalDecodedInstValid(i) && !io.fromRob.isResumeVType
+    inst.valid := finalDecodedInstValid(i) && !io.fromRob.isResumeVType && TraceRTLChoose(true.B, !io.redirect.valid)
     inst.bits := finalDecodedInst(i)
     inst.bits.lsrc(0) := Mux(finalDecodedInst(i).vpu.isReverse, finalDecodedInst(i).lsrc(1), finalDecodedInst(i).lsrc(0))
     inst.bits.lsrc(1) := Mux(finalDecodedInst(i).vpu.isReverse, finalDecodedInst(i).lsrc(0), finalDecodedInst(i).lsrc(1))
@@ -256,6 +258,12 @@ class DecodeStage(implicit p: Parameters) extends XSModule
     }.reduce(_ || _)
     inst.bits.srcType(3) := Mux(srcType0123HasV0, SrcType.v0, finalDecodedInst(i).srcType(3))
     inst.bits.debug.foreach(_.debug_seqNum.uopIdx := inst.bits.uopIdx)
+    if (env.TraceRTLMode) {
+      inst.bits.exceptionVec := 0.U.asTypeOf(inst.bits.exceptionVec)
+      when(inst.bits.traceInfo.hasException) {
+        inst.bits.exceptionVec(illegalInstr) := true.B
+      }
+    }
   }
 
   io.out.map(x =>

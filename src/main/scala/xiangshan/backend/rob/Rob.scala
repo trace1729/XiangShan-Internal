@@ -200,12 +200,22 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
   io.enq.resp := allocatePtrVec
   val canEnqueue = VecInit(io.enq.req.map(req => req.valid && req.bits.firstUop && io.enq.canAccept))
   val timer = GTimer()
+  val traceInfoEntries =
+    if (env.TraceRTLMode) Some(Mem(RobSize, new xiangshan.frontend.tracertl.TraceInstrBundle)) else None
   // robEntries enqueue
   for (i <- 0 until RobSize) {
     val enqOH = VecInit(canEnqueue.zip(allocatePtrVec.map(_.value === i.U)).map(x => x._1 && x._2))
     assert(PopCount(enqOH) < 2.U, s"robEntries$i enqOH is not one hot")
     when(enqOH.asUInt.orR && !io.redirect.valid){
-      connectEnq(robEntries(i), Mux1H(enqOH, io.enq.req.map(_.bits)))
+      val selectedEnq = Mux1H(enqOH, io.enq.req.map(_.bits))
+      connectEnq(robEntries(i), selectedEnq)
+    }
+  }
+  if (env.TraceRTLMode) {
+    io.enq.req.zip(canEnqueue).zip(allocatePtrVec).foreach { case ((req, enq), ptr) =>
+      when(enq && !io.redirect.valid) {
+        traceInfoEntries.get(ptr.value) := req.bits.traceInfo
+      }
     }
   }
   // robBanks0 include robidx : 0 8 16 24 32 ...
@@ -662,6 +672,10 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
   io.flushOut.bits.ftqOffset := Mux(needModifyFtqIdxOffset, firstVInstrFtqOffset, deqPtrEntry.ftqOffset)
   io.flushOut.bits.level := Mux(deqHasReplayInst || intrEnable || deqHasException || needModifyFtqIdxOffset, RedirectLevel.flush, RedirectLevel.flushAfter) // TODO use this to implement "exception next"
   io.flushOut.bits.interrupt := !isFlushPipe
+  if (env.TraceRTLMode) {
+    val flushTraceRobIdx = Mux(needModifyFtqIdxOffset, firstVInstrRobIdx, deqPtr)
+    io.flushOut.bits.traceInfo := traceInfoEntries.get(flushTraceRobIdx.value)
+  }
   XSPerfAccumulate("flush_num", io.flushOut.valid)
   XSPerfAccumulate("interrupt_num", io.flushOut.valid && intrEnable)
   XSPerfAccumulate("exception_num", io.flushOut.valid && deqHasException)
@@ -691,6 +705,11 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
   io.exception.bits.isHls := RegEnable(deqPtrEntry.isHls, exceptionHappen)
   io.exception.bits.vls := RegEnable(deqPtrEntry.vls, exceptionHappen)
   io.exception.bits.trigger := RegEnable(exceptionDataRead.bits.trigger, exceptionHappen)
+  if (env.TraceRTLMode) {
+    io.exception.bits.traceInfo := RegEnable(traceInfoEntries.get(deqPtr.value), exceptionHappen)
+  } else {
+    io.exception.bits.traceInfo := DontCare
+  }
 
   // data will be one cycle after valid
   io.readGPAMemAddr.valid := exceptionHappen
@@ -1485,6 +1504,40 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
           reset = reset
         )
       }
+    }
+  }
+
+  if (env.TraceRTLMode) {
+    val hasNonWrongPathEnq = Cat(io.enq.req.map(req => req.valid && !req.bits.traceInfo.isWrongPath)).orR
+    io.enq.req.foreach { req =>
+      dontTouch(req.bits.traceInfo)
+      req.bits.debug.foreach { debug =>
+        XSError(
+          io.enq.canAccept && req.valid && debug.pc =/= req.bits.traceInfo.pcVA,
+          "ROB Enq: pc should be equal to traceInfo.pcVA"
+        )
+      }
+      XSError(
+        io.enq.canAccept && req.valid && isEmpty && req.bits.traceInfo.isWrongPath && !hasNonWrongPathEnq,
+        "ROB's first instruction should not be wrongpath"
+      )
+    }
+
+    val traceCollector = Module(new xiangshan.frontend.tracertl.TraceCollector)
+    traceCollector.io.enable := io.commits.commitValid(0) && io.commits.isCommit
+    (0 until CommitWidth).foreach { i =>
+      val uop = commitDebugUop(i)
+      val traceInfo = traceInfoEntries.get(deqPtrVec(i).value)
+      traceCollector.io.in(i).valid        := io.commits.commitValid(i)
+      traceCollector.io.in(i).bits.pc      := SignExt(uop.debug_pc.getOrElse(0.U), XLEN)
+      traceCollector.io.in(i).bits.inst    := traceInfo.inst
+      traceCollector.io.in(i).bits.instNum := instrSizeCommit(i)
+      traceCollector.io.traceInfo(i)       := traceInfo
+      XSError(
+        traceCollector.io.enable && traceCollector.io.in(i).valid &&
+          SignExt(uop.debug_pc.getOrElse(0.U), XLEN) =/= traceInfo.pcVA,
+        "Trace ROB commit pc mismatch"
+      )
     }
   }
 

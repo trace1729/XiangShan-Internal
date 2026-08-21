@@ -859,6 +859,7 @@ class IssueQueueImp(implicit p: Parameters, params: IssueBlockParams) extends XS
   }
 
   deqBeforeDly.zipWithIndex.foreach { case (deq, i) =>
+    deq.bits                 := 0.U.asTypeOf(deq.bits)
     deq.valid                := finalDeqSelValidVec(i) && !cancelDeqVec(i)
     // bju deq valid
     if (params.aluDeqNeedPickJump && (i ==1)) {
@@ -884,6 +885,7 @@ class IssueQueueImp(implicit p: Parameters, params: IssueBlockParams) extends XS
     deq.bits.pdest := deqEntryVec(i).bits.payload.pdest
     deq.bits.pdestVl.foreach(_ := deqEntryVec(i).bits.payload.pdestVl.get)
     deq.bits.robIdx := deqEntryVec(i).bits.status.robIdx
+    deq.bits.traceInfo := deqEntryVec(i).bits.payload.traceInfo
 
     val deqDataSources = deqEntryVec.map(_.bits.status.srcStatus.map(_.dataSources))
     deq.bits.dataSources.zip(deqDataSources(i)).foreach { case (sink, source) => sink := source}
@@ -902,6 +904,7 @@ class IssueQueueImp(implicit p: Parameters, params: IssueBlockParams) extends XS
         deq.bits.dataSources := deqDataSources(0)
         deq.bits.exuSources.foreach(_ := deqBeforeDly(0).bits.exuSources.get)
         deq.bits.loadDependency.foreach(_ := deqBeforeDly(0).bits.loadDependency.get)
+        deq.bits.traceInfo := deqBeforeDly(0).bits.traceInfo
       }
     }
 

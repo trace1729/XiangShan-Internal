@@ -213,6 +213,11 @@ class BackendInlinedImp(override val wrapper: BackendInlined)(implicit p: Parame
   println(s"[Backend] ctrlBlock.io.fromWB.wbData.size = ${ctrlBlock.io.fromWB.wbData.size}, wbDataPathToCtrlBlock.size = ${wbDataPathToCtrlBlock.size}")
   assert(ctrlBlock.io.fromWB.wbData.size == wbDataPathToCtrlBlock.size, "ctrlBlock.io.fromWB.wbData.size == wbDataPathToCtrlBlock.size")
   ctrlBlock.io.fromWB.wbData.zip(wbDataPathToCtrlBlock).map(x => x._1 := x._2)
+  if (env.TraceRTLMode) {
+    ctrlBlock.io.fromWB.wbData.foreach { wb =>
+      wb.bits.exceptionVec := 0.U.asTypeOf(wb.bits.exceptionVec)
+    }
+  }
   ctrlBlock.io.fromWB.delayedOldestExuRedirect := intRegion.io.wbDataPathToCtrlBlock.delayedOldestExuRedirect.get
   ctrlBlock.io.fromMem.stIn <> io.mem.stIn
   ctrlBlock.io.fromMem.violation <> io.mem.memoryViolation

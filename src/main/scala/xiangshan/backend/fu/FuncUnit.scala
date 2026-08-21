@@ -14,6 +14,7 @@ import xiangshan.backend.fu.vector.Bundles.{VType, Vl, Vxsat}
 import xiangshan.ExceptionNO
 import xiangshan.backend.fu.wrapper.{CSRInput, CSRToDecode}
 import xiangshan.frontend.bpu.{BranchAttribute, BranchInfo}
+import xiangshan.frontend.tracertl.TraceInstrBundle
 
 trait HasFuLatency {
   val latencyVal: Option[Int]
@@ -68,6 +69,7 @@ class FuncUnitCtrlInput(cfg: FuConfig)(implicit p: Parameters) extends XSBundle 
   val fpu         = OptionWrapper(cfg.writeFflags, new FPUCtrlSignals)
   val vpu         = OptionWrapper(cfg.needVecCtrl, new VPUCtrlSignals)
   val vialuCtrl   = OptionWrapper(cfg.needVIaluCtrl, new VIAluCtrlSignals)
+  val traceInfo   = new TraceInstrBundle
 }
 
 class FuncUnitCtrlOutput(cfg: FuConfig)(implicit p: Parameters) extends XSBundle {

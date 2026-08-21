@@ -35,6 +35,7 @@ import xiangshan.frontend.bpu.BranchAttribute
 import xiangshan.frontend.ftq.FtqPtr
 import xiangshan.frontend.ftq.FtqToCtrlIO
 import xiangshan.frontend.FrontendRedirect
+import xiangshan.frontend.tracertl.TraceInstrBundle
 
 import xiangshan.backend.Bundles.DynInst
 import xiangshan.backend.Bundles.UopIdx
@@ -114,6 +115,7 @@ class CtrlFlow(implicit p: Parameters) extends XSBundle {
   val ftqPtr = new FtqPtr
   val ftqOffset = UInt(FetchBlockInstOffsetWidth.W)
   val isLastInFtqEntry = Bool()
+  val traceInfo = new TraceInstrBundle
   val debug_seqNum = InstSeqNum()
 }
 
@@ -237,6 +239,7 @@ class Redirect(implicit p: Parameters) extends FrontendRedirect {
   val debug_runahead_checkpoint_id = UInt(64.W)
   val debugIsCtrl = Bool()
   val debugIsMemVio = Bool()
+  val traceInfo = new TraceInstrBundle
 
   def flushItself() = RedirectLevel.flushItself(level)
 
