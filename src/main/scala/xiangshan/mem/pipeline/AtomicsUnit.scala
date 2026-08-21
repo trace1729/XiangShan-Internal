@@ -34,6 +34,7 @@ import xiangshan.mem.Bundles._
 import xiangshan.cache.mmu.Pbmt
 import xiangshan.cache.{AtomicWordIO, HasDCacheParameters, MemoryOpConstants, TLError}
 import xiangshan.cache.mmu.{TlbCmd, TlbRequestIO}
+import xiangshan.frontend.tracertl.{TraceRTLChoose, TraceRTLDontCareValue}
 import difftest._
 
 class AtomicsUnit(val param: ExeUnitParams)(implicit p: Parameters) extends XSModule
@@ -145,7 +146,7 @@ class AtomicsUnit(val param: ExeUnitParams)(implicit p: Parameters) extends XSMo
   when (state === s_invalid) {
     when (io.in.fire) {
       uop := io.in.bits.toDynInst()
-      rs1 := io.in.bits.src(0)
+      rs1 := TraceRTLChoose(io.in.bits.src(0), SignExt(io.in.bits.toDynInst().traceInfo.memoryAddrVA, XLEN))
       state := s_tlb_and_flush_sbuffer_req
       have_sent_first_tlb_req := false.B
     }
@@ -250,9 +251,10 @@ class AtomicsUnit(val param: ExeUnitParams)(implicit p: Parameters) extends XSMo
     have_sent_first_tlb_req := true.B
 
     when (io.dtlb.resp.fire && have_sent_first_tlb_req) {
-      paddr   := io.dtlb.resp.bits.paddr(0)
-      gpaddr  := io.dtlb.resp.bits.gpaddr(0)
-      vaddr   := io.dtlb.resp.bits.fullva
+      val tracePAddr = SignExt(uop.traceInfo.memoryAddrPA, PAddrBits)
+      paddr   := TraceRTLChoose(io.dtlb.resp.bits.paddr(0), tracePAddr)
+      gpaddr  := TraceRTLChoose(io.dtlb.resp.bits.gpaddr(0), tracePAddr)
+      vaddr   := TraceRTLChoose(io.dtlb.resp.bits.fullva, SignExt(uop.traceInfo.memoryAddrVA, XLEN))
       isForVSnonLeafPTE := io.dtlb.resp.bits.isForVSnonLeafPTE
       // exception handling
       // Todo: Zabha extension contains AMOCAS.[B/H], so b00 should be used for B in the future.
@@ -262,16 +264,16 @@ class AtomicsUnit(val param: ExeUnitParams)(implicit p: Parameters) extends XSMo
         LSUOpType.D.U -> (vaddr(2,0) === 0.U), // D
         LSUOpType.Q.U -> (vaddr(3,0) === 0.U)  // Q
       ))
-      exceptionVec(loadAddrMisaligned)  := !addrAligned && isLr
-      exceptionVec(storeAddrMisaligned) := !addrAligned && !isLr
-      exceptionVec(storePageFault)      := io.dtlb.resp.bits.excp(0).pf.st
-      exceptionVec(loadPageFault)       := io.dtlb.resp.bits.excp(0).pf.ld
-      exceptionVec(storeAccessFault)    := io.dtlb.resp.bits.excp(0).af.st
-      exceptionVec(loadAccessFault)     := io.dtlb.resp.bits.excp(0).af.ld
-      exceptionVec(storeGuestPageFault) := io.dtlb.resp.bits.excp(0).gpf.st
-      exceptionVec(loadGuestPageFault)  := io.dtlb.resp.bits.excp(0).gpf.ld
+      exceptionVec(loadAddrMisaligned)  := TraceRTLDontCareValue(!addrAligned && isLr)
+      exceptionVec(storeAddrMisaligned) := TraceRTLDontCareValue(!addrAligned && !isLr)
+      exceptionVec(storePageFault)      := TraceRTLDontCareValue(io.dtlb.resp.bits.excp(0).pf.st)
+      exceptionVec(loadPageFault)       := TraceRTLDontCareValue(io.dtlb.resp.bits.excp(0).pf.ld)
+      exceptionVec(storeAccessFault)    := TraceRTLDontCareValue(io.dtlb.resp.bits.excp(0).af.st)
+      exceptionVec(loadAccessFault)     := TraceRTLDontCareValue(io.dtlb.resp.bits.excp(0).af.ld)
+      exceptionVec(storeGuestPageFault) := TraceRTLDontCareValue(io.dtlb.resp.bits.excp(0).gpf.st)
+      exceptionVec(loadGuestPageFault)  := TraceRTLDontCareValue(io.dtlb.resp.bits.excp(0).gpf.ld)
 
-      exceptionVec(breakPoint) := triggerBreakpoint
+      exceptionVec(breakPoint) := TraceRTLDontCareValue(triggerBreakpoint)
       trigger                  := triggerAction
 
       when (!io.dtlb.resp.bits.miss) {
@@ -355,6 +357,15 @@ class AtomicsUnit(val param: ExeUnitParams)(implicit p: Parameters) extends XSMo
   val dcache_resp_id    = Reg(UInt())
   val dcache_resp_tl_error = Reg(new TLError())
 
+  when (state === s_cache_req) {
+    if (env.TraceRTLMode) {
+      dcache_resp_data := 0.U
+      dcache_resp_id := true.B
+      dcache_resp_tl_error := 0.U.asTypeOf(dcache_resp_tl_error)
+      state := s_cache_resp_latch
+    }
+  }
+
   when (state === s_cache_resp) {
     // when not miss
     // everything is OK, simply send response back to sbuffer
@@ -399,9 +410,9 @@ class AtomicsUnit(val param: ExeUnitParams)(implicit p: Parameters) extends XSMo
     )
 
     when (dcache_resp_tl_error.asUInt.orR && io.csrCtrl.cache_error_enable) {
-      exceptionVec(loadAccessFault)  := isLr && dcache_resp_tl_error.tl_denied
-      exceptionVec(storeAccessFault) := !isLr && dcache_resp_tl_error.tl_denied
-      exceptionVec(hardwareError)    := dcache_resp_tl_error.tl_corrupt && !dcache_resp_tl_error.tl_denied
+      exceptionVec(loadAccessFault)  := TraceRTLDontCareValue(isLr && dcache_resp_tl_error.tl_denied)
+      exceptionVec(storeAccessFault) := TraceRTLDontCareValue(!isLr && dcache_resp_tl_error.tl_denied)
+      exceptionVec(hardwareError)    := TraceRTLDontCareValue(dcache_resp_tl_error.tl_corrupt && !dcache_resp_tl_error.tl_denied)
     }
 
     resp_data := resp_data_wire
@@ -488,8 +499,8 @@ class AtomicsUnit(val param: ExeUnitParams)(implicit p: Parameters) extends XSMo
   // send req to dtlb
   // keep firing until tlb hit
   io.dtlb.req.valid       := state === s_tlb_and_flush_sbuffer_req
-  io.dtlb.req.bits.vaddr  := vaddr
-  io.dtlb.req.bits.fullva := vaddr
+  io.dtlb.req.bits.vaddr  := TraceRTLChoose(vaddr, uop.traceInfo.memoryAddrVA(VAddrBits - 1, 0))
+  io.dtlb.req.bits.fullva := TraceRTLChoose(vaddr, SignExt(uop.traceInfo.memoryAddrVA, XLEN))
   io.dtlb.req.bits.checkfullva := true.B
   io.dtlb.resp.ready      := true.B
   io.dtlb.req.bits.cmd    := Mux(isLr, TlbCmd.atom_read, TlbCmd.atom_write)
@@ -542,6 +553,11 @@ class AtomicsUnit(val param: ExeUnitParams)(implicit p: Parameters) extends XSMo
     !io.dcache.block_lr, // block lr to survive in lr storm
     data_valid // wait until src(1) is ready
   ) && state === s_cache_req
+  if (env.TraceRTLMode) {
+    exceptionVec := 0.U.asTypeOf(exceptionVec)
+    atom_override_xtval := false.B
+    io.dcache.req.valid := false.B
+  }
   val pipe_req = io.dcache.req.bits
   pipe_req := DontCare
   pipe_req.cmd := LookupTree(uop.fuOpType, List(

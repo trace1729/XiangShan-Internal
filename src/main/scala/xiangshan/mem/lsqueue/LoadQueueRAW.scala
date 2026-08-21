@@ -84,6 +84,7 @@ class LoadQueueRAW(implicit p: Parameters) extends XSModule
     // only fo
     val pc = UInt(VAddrBits.W)
     val debugInfo = new PerfDebugInfo
+    val traceInfo = new xiangshan.frontend.tracertl.TraceInstrBundle
   }
   private def isOlder(left: UopEntry, right: UopEntry): Bool = isBefore(left.robIdx, right.robIdx)
   val allocated = RegInit(VecInit(List.fill(LoadQueueRAWSize)(false.B))) // The control signals need to explicitly indicate the initial value
@@ -179,6 +180,7 @@ class LoadQueueRAW(implicit p: Parameters) extends XSModule
       uop(enqIndex).ftqOffset := enq.bits.ftqOffset
       uop(enqIndex).pc := enq.bits.pc
       uop(enqIndex).debugInfo := enq.bits.debugInfo
+      uop(enqIndex).traceInfo := enq.bits.traceInfo
       datavalid(enqIndex) := enq.bits.dataValid
     }
     val debug_robIdx = enq.bits.robIdx.asUInt
@@ -387,6 +389,7 @@ class LoadQueueRAW(implicit p: Parameters) extends XSModule
     redirect.bits.stFtqOffset := stFtqOffset(i)
     redirect.bits.level       := RedirectLevel.flush
     redirect.bits.target      := rollbackLqWb(i).bits.pc
+    redirect.bits.traceInfo   := rollbackLqWb(i).bits.traceInfo
     redirect.bits.debug_runahead_checkpoint_id := rollbackLqWb(i).bits.debugInfo.runahead_checkpoint_id
     redirect
   })

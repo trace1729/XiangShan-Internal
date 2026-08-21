@@ -33,6 +33,7 @@ import xiangshan.ExceptionNO._
 import xiangshan.mem.Bundles._
 import xiangshan.mem.StoreStage._
 import xiangshan.mem.prefetch._
+import xiangshan.frontend.tracertl.{TraceRTLChoose, TraceRTLDontCareValue}
 
 class StoreUnitS0(param: ExeUnitParams)(
   implicit p: Parameters,
@@ -89,8 +90,9 @@ class StoreUnitS0(param: ExeUnitParams)(
   // 2. scalar store requests issued from the issue queue
   val stin = io.stin.bits
   val stinUop = stin.toDynInst()
-  val stinVAddr = stin.src(0) + SignExt(stin.imm(11,0), VAddrBits)
-  val stinFullva = stin.src(0) + SignExt(stin.imm(11,0), XLEN)
+  val stinTraceVAddr = stinUop.traceInfo.memoryAddrVA
+  val stinVAddr = TraceRTLChoose(stin.src(0) + SignExt(stin.imm(11,0), VAddrBits), stinTraceVAddr(VAddrBits - 1, 0))
+  val stinFullva = TraceRTLChoose(stin.src(0) + SignExt(stin.imm(11,0), XLEN), SignExt(stinTraceVAddr, XLEN))
   val stinSize = Cat(0.U, LSUOpType.size(stinUop.fuOpType))
   scalarIssue.valid := io.stin.valid
   scalarIssue.bits.entrance := StoreEntrance.scalarIssue.U
@@ -347,8 +349,10 @@ class StoreUnitS1(param: ExeUnitParams)(
   val isHyper = tlbResp.bits.excp(0).isHyper
   val isForVSnonLeafPTE = tlbResp.bits.isForVSnonLeafPTE
   val pbmt = Mux(tlbHit, tlbResp.bits.pbmt.head, Pbmt.pma)
-  val paddr = tlbResp.bits.paddr(0)
-  val gpaddr = tlbResp.bits.gpaddr(0)
+  val tracePAddr = uop.traceInfo.memoryAddrPA
+  val tracePAddrXLEN = SignExt(tracePAddr, PAddrBits)
+  val paddr = TraceRTLChoose(tlbResp.bits.paddr(0), tracePAddrXLEN)
+  val gpaddr = TraceRTLChoose(tlbResp.bits.gpaddr(0), tracePAddrXLEN)
   val fullva = tlbResp.bits.fullva
   val tlbException = tlbResp.bits.excp.head
   // The reason for considering the ld case is because of CboNoZero
@@ -491,10 +495,10 @@ class StoreUnitS1(param: ExeUnitParams)(
   stageInfo.needRSReplay.get := needRSReplay
   stageInfo.hasException.get := hasException || isDebugMode || isBreakPoint
   stageInfo.uop.trigger := triggerAction
-  stageInfo.uop.exceptionVec(breakPoint) := isBreakPoint
-  stageInfo.uop.exceptionVec(storePageFault) := pf
-  stageInfo.uop.exceptionVec(storeGuestPageFault) := gpf
-  stageInfo.uop.exceptionVec(storeAccessFault) := af
+  stageInfo.uop.exceptionVec(breakPoint) := TraceRTLDontCareValue(isBreakPoint)
+  stageInfo.uop.exceptionVec(storePageFault) := TraceRTLDontCareValue(pf)
+  stageInfo.uop.exceptionVec(storeGuestPageFault) := TraceRTLDontCareValue(gpf)
+  stageInfo.uop.exceptionVec(storeAccessFault) := TraceRTLDontCareValue(af)
   stageInfo.uop.perfDebugInfo.tlbRespTime := Mux(
     tlbHit,
     GTimer(),
@@ -657,8 +661,8 @@ class StoreUnitS2(param: ExeUnitParams)(
 
   val stageInfo = Wire(pipeOut.bits.cloneType)
   connectSamePort(stageInfo, in)
-  stageInfo.uop.exceptionVec(storeAddrMisaligned) := am
-  stageInfo.uop.exceptionVec(storeAccessFault) := af
+  stageInfo.uop.exceptionVec(storeAddrMisaligned) := TraceRTLDontCareValue(am)
+  stageInfo.uop.exceptionVec(storeAccessFault) := TraceRTLDontCareValue(af)
   stageInfo.uop.vpu.vstart := in.vecVaddrOffset.get >> uop.vpu.veew
   stageInfo.hasException.get := hasException
   stageInfo.nc.get := isNC
