@@ -8,6 +8,7 @@ import xiangshan.backend.fu.FuConfig
 import xiangshan.backend.fu.vector.Bundles.VSew
 import xiangshan.backend.fu.fpu.FpNonPipedFuncUnit
 import xiangshan.backend.rob.RobPtr
+import xiangshan.frontend.tracertl.TraceRTLChoose
 import yunsuan.VfpuType
 import yunsuan.fpu.FloatDivider
 
@@ -16,8 +17,8 @@ class FDivSqrt(cfg: FuConfig)(implicit p: Parameters) extends FpNonPipedFuncUnit
 
   // io alias
   private val opcode = fuOpType(0)
-  private val src0 = inData.src(0)
-  private val src1 = inData.src(1)
+  private val src0 = TraceRTLChoose(inData.src(0), io.in.bits.ctrl.traceInfo.arthiSrc0)
+  private val src1 = TraceRTLChoose(inData.src(1), io.in.bits.ctrl.traceInfo.arthiSrc1)
 
   // modules
   private val fdiv = Module(new FloatDivider)

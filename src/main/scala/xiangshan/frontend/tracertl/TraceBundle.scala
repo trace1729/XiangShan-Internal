@@ -32,8 +32,9 @@ class TraceInstrInnerBundle(implicit p: Parameters) extends Bundle {
 
   val pcVA = UInt(trtl.TraceVAddrWidth.W)
   val pcPA = UInt(trtl.TracePAddrWidth.W)
-  val memoryAddrVA = UInt(trtl.TraceVAddrWidth.W)
-  val memoryAddrPA = UInt(trtl.TracePAddrWidth.W)
+  // Trace format v3 reuses these two 64-bit words for arithmetic operands.
+  val memoryAddrVA = UInt(64.W)
+  val memoryAddrPA = UInt(64.W)
   val target = UInt(trtl.TraceVAddrWidth.W)
   val inst = UInt(trtl.TraceInstCodeWidth.W)
   val memoryType = UInt(4.W)
@@ -46,6 +47,8 @@ class TraceInstrInnerBundle(implicit p: Parameters) extends Bundle {
   val InstID = UInt(trtl.TraceInstIDWidth.W)
 
   def isFastSim = fastSimulation(0) === 1.U
+  def arthiSrc0 = memoryAddrVA
+  def arthiSrc1 = memoryAddrPA
   def isTaken = branchTaken(0) === 1.U
   def isException = exception =/= 0.U
 
