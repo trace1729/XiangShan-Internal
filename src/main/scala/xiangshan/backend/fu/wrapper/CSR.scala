@@ -93,6 +93,7 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
   private val wdataReg = RegEnable(wdata, 0.U(64.W), io.in.fire)
 
   private val robIdxReg = RegEnable(io.in.bits.ctrl.robIdx, io.in.fire)
+  private val traceInfoReg = RegEnable(io.in.bits.ctrl.traceInfo, io.in.fire)
   private val thisRobIdx = Wire(new RobPtr)
   when (io.in.valid) {
     thisRobIdx := io.in.bits.ctrl.robIdx
@@ -115,6 +116,7 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
       in.bits.sret := isSret
       in.bits.dret := isDret
       in.bits.redirectFlush := redirectFlush
+      in.bits.traceInfo := io.in.bits.ctrl.traceInfo
   }
   csrMod.io.trapInst := trapInstMod.io.currentTrapInst
   csrMod.io.fetchMalTval := trapTvalMod.io.tval
@@ -137,6 +139,7 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
   csrMod.io.fromRob.trap.bits.isHls := csrIn.exception.bits.isHls
   csrMod.io.fromRob.trap.bits.isFetchMalAddr := csrIn.exception.bits.isFetchMalAddr
   csrMod.io.fromRob.trap.bits.isForVSnonLeafPTE := csrIn.exception.bits.isForVSnonLeafPTE
+  csrMod.io.fromRob.trap.bits.traceInfo := csrIn.exception.bits.traceInfo
 
   csrMod.io.fromRob.commit.fflags := setFflags
   csrMod.io.fromRob.commit.fsDirty := setFsDirty
@@ -330,6 +333,7 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
   redirect.backendIPF := csrMod.io.xretTargetPc.bits.raiseIPF
   redirect.backendIAF := csrMod.io.xretTargetPc.bits.raiseIAF
   redirect.backendIGPF := csrMod.io.xretTargetPc.bits.raiseIGPF
+  redirect.traceInfo := traceInfoReg
   // Only mispred will send redirect to frontend
   redirect.isMisPred := false.B
 

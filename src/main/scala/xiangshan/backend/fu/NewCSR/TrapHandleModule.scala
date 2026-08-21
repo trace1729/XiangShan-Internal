@@ -2,13 +2,14 @@ package xiangshan.backend.fu.NewCSR
 
 import chisel3._
 import chisel3.util._
+import org.chipsalliance.cde.config.Parameters
 import xiangshan.ExceptionNO
 import xiangshan.backend.fu.NewCSR.CSRBundles.{CauseBundle, PrivState, XtvecBundle}
 import xiangshan.backend.fu.NewCSR.CSRDefines.XtvecMode
 import xiangshan.backend.fu.NewCSR.CSRBundleImplicitCast._
 
 
-class TrapHandleModule extends Module {
+class TrapHandleModule(implicit p: Parameters) extends Module {
   val io = IO(new TrapHandleIO)
 
   private val trapInfo = io.in.trapInfo
@@ -113,7 +114,7 @@ class TrapHandleModule extends Module {
 
 }
 
-class TrapHandleIO extends Bundle {
+class TrapHandleIO(implicit p: Parameters) extends Bundle {
   val in = Input(new Bundle {
     val trapInfo = ValidIO(new Bundle {
       val trapVec = UInt(64.W)

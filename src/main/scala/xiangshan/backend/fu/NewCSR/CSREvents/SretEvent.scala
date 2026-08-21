@@ -11,7 +11,7 @@ import xiangshan.backend.fu.NewCSR._
 import xiangshan.AddrTransType
 
 
-class SretEventOutput extends Bundle with EventUpdatePrivStateOutput with EventOutputBase {
+class SretEventOutput(implicit p: Parameters) extends Bundle with EventUpdatePrivStateOutput with EventOutputBase {
   // Todo: write sstatus instead of mstatus
   val mstatus = ValidIO((new MstatusBundle).addInEvent(_.SIE, _.SPIE, _.SPP, _.MPRV, _.MDT, _.SDT))
   val hstatus = ValidIO((new HstatusBundle).addInEvent(_.SPV))
@@ -19,11 +19,11 @@ class SretEventOutput extends Bundle with EventUpdatePrivStateOutput with EventO
   val targetPc = ValidIO(new TargetPCBundle)
 }
 
-class SretEventSDTOutput extends Bundle with EventOutputBase {
+class SretEventSDTOutput(implicit p: Parameters) extends Bundle with EventOutputBase {
   val vsstatus = ValidIO((new SstatusBundle).addInEvent(_.SDT))
 }
 
-class SretEventInput extends Bundle {
+class SretEventInput(implicit p: Parameters) extends Bundle {
   val privState = Input(new PrivState)
   val mstatus   = Input(new MstatusBundle)
   val hstatus   = Input(new HstatusBundle)
@@ -134,7 +134,6 @@ trait SretEventSinkBundle extends EventSinkBundle { self: CSRModule[_ <: CSRBund
 
   reconnectReg()
 }
-
 trait SretEventSDTSinkBundle extends EventSinkBundle { self: CSRModule[_ <: CSRBundle] =>
   val retFromSSDT = IO(Flipped(new SretEventSDTOutput))
 
@@ -142,4 +141,3 @@ trait SretEventSDTSinkBundle extends EventSinkBundle { self: CSRModule[_ <: CSRB
 
   reconnectReg()
 }
-

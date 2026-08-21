@@ -3,7 +3,9 @@ package xiangshan.backend.fu.NewCSR
 import chisel3._
 import chisel3.util.BitPat.bitPatToUInt
 import chisel3.util.{BitPat, Cat, Fill, Mux1H, MuxCase, ValidIO}
+import org.chipsalliance.cde.config.Parameters
 import utility.{SignExt, ZeroExt}
+import xiangshan.DebugOptionsKey
 import xiangshan.backend.fu.NewCSR.CSRBundles._
 import xiangshan.backend.fu.NewCSR.CSRDefines._
 import xiangshan.backend.fu.NewCSR.CSRFunc._
@@ -222,13 +224,17 @@ trait SupervisorLevel { self: NewCSR with MachineLevel =>
   )
 }
 
-class SstatusBundle extends CSRBundle {
+class SstatusBundle(implicit p: Parameters) extends CSRBundle {
+  private def initContextStatus = {
+    val env = p(DebugOptionsKey)
+    if (env.TraceRTLMode) ContextStatus.Clean else ContextStatus.Off
+  }
   val SIE  = CSRWARLField   (1, wNoFilter).withDescription("Global interrupt enable for S-mode.")
   val SPIE = CSRWARLField   (5, wNoFilter).withDescription("Saved SIE value from before trap entry.")
   val UBE  = CSRROField     (6).withReset(0.U).withDescription("U-mode endianness selector.")
   val SPP  = CSRWARLField   (8, wNoFilter).withReset(0.U).withDescription("Privilege level active before trap entry to S-mode.")
-  val VS   = ContextStatus  (10, 9).withReset(ContextStatus.Off).withDescription("Vector context status.")
-  val FS   = ContextStatus  (14, 13).withReset(ContextStatus.Off).withDescription("Floating-point context status.")
+  val VS   = ContextStatus  (10, 9).withReset(initContextStatus).withDescription("Vector context status.")
+  val FS   = ContextStatus  (14, 13).withReset(initContextStatus).withDescription("Floating-point context status.")
   val XS   = ContextStatusRO(16, 15).withReset(0.U).withDescription("Additional user extension state summary.")
   val SUM  = CSRWARLField   (18, wNoFilter).withReset(0.U).withDescription("Permit S-mode data accesses to pages marked as user.")
   val MXR  = CSRWARLField   (19, wNoFilter).withReset(0.U).withDescription("Make executable pages readable when set.")

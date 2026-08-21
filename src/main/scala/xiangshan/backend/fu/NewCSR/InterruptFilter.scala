@@ -2,14 +2,16 @@ package xiangshan.backend.fu.NewCSR
 
 import chisel3._
 import chisel3.util._
+import org.chipsalliance.cde.config.Parameters
 import utility.{DelayN, GatedValidRegNext}
 import utils._
 import xiangshan.backend.fu.NewCSR.CSRBundles.{CauseBundle, PrivState, XtvecBundle}
 import xiangshan.backend.fu.NewCSR.CSRDefines.{PrivMode, XtvecMode}
 import xiangshan.backend.fu.NewCSR.InterruptNO
+import xiangshan.frontend.tracertl.TraceRTLChoose
 
 
-class InterruptFilter extends Module {
+class InterruptFilter(implicit p: Parameters) extends Module {
   val io = IO(new InterruptFilterIO)
 
   val privState = io.in.privState
@@ -533,7 +535,7 @@ class InterruptFilter extends Module {
   val enableDebugIntr = io.in.debugIntr && !disableDebugIntr
 
   val debugIntrReg = RegNext(enableDebugIntr, false.B)
-  val disableAllIntrReg = RegNext(disableDebugIntr || !io.in.mnstatusNMIE, false.B)
+  val disableAllIntrReg = RegNext(disableDebugIntr || !io.in.mnstatusNMIE || TraceRTLChoose(false.B, true.B), false.B)
   val nmiReg = RegNext(io.in.nmi, false.B)
   val nmiVecReg = RegNext(nmiVec, 0.U.asTypeOf(nmiVec))
 

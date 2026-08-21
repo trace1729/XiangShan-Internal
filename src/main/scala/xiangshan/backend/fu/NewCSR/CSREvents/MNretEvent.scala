@@ -11,14 +11,14 @@ import xiangshan.backend.fu.NewCSR._
 import xiangshan.AddrTransType
 
 
-class MNretEventOutput extends Bundle with EventUpdatePrivStateOutput with EventOutputBase {
+class MNretEventOutput(implicit p: Parameters) extends Bundle with EventUpdatePrivStateOutput with EventOutputBase {
   val mnstatus  = ValidIO((new MnstatusBundle).addInEvent(_.NMIE))
   val mstatus   = ValidIO((new MstatusBundle).addInEvent(_.MPRV, _.MDT, _.SDT))
   val vsstatus  = ValidIO((new SstatusBundle).addInEvent(_.SDT))
   val targetPc  = ValidIO(new TargetPCBundle)
 }
 
-class MNretEventInput extends Bundle {
+class MNretEventInput(implicit p: Parameters) extends Bundle {
   val mnstatus = Input(new MnstatusBundle)
   val mstatus  = Input(new MstatusBundle)
   val mnepc    = Input(new Epc())

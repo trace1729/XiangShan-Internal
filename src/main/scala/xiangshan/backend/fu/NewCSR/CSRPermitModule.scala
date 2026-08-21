@@ -8,6 +8,7 @@ import xiangshan.backend.fu.NewCSR.CSRDefines._
 import xiangshan.backend.decode.isa.CSRs
 import org.chipsalliance.cde.config.Parameters
 import system.HasSoCParameter
+import xiangshan.frontend.tracertl.TraceRTLChoose
 
 class CSRPermitModule(implicit p: Parameters) extends Module {
   val io = IO(new CSRPermitIO)
@@ -90,14 +91,14 @@ class CSRPermitModule(implicit p: Parameters) extends Module {
   val Xret_EX_II = xRetPermitMod.io.out.Xret_EX_II
   val Xret_EX_VI = xRetPermitMod.io.out.Xret_EX_VI
 
-  io.out.EX_II := csrAccess_EX_II || Xret_EX_II
-  io.out.EX_VI := !io.out.EX_II && (csrAccess_EX_VI || Xret_EX_VI)
+  io.out.EX_II := TraceRTLChoose(csrAccess_EX_II || Xret_EX_II, false.B)
+  io.out.EX_VI := TraceRTLChoose(!io.out.EX_II && (csrAccess_EX_VI || Xret_EX_VI), false.B)
 
-  io.out.hasLegalWen   := wen   && !(io.out.EX_II || io.out.EX_VI)
-  io.out.hasLegalMNret := xRetPermitMod.io.out.hasLegalMNret
-  io.out.hasLegalMret  := xRetPermitMod.io.out.hasLegalMret
-  io.out.hasLegalSret  := xRetPermitMod.io.out.hasLegalSret
-  io.out.hasLegalDret  := xRetPermitMod.io.out.hasLegalDret
+  io.out.hasLegalWen   := wen && TraceRTLChoose(!(io.out.EX_II || io.out.EX_VI), true.B)
+  io.out.hasLegalMNret := TraceRTLChoose(xRetPermitMod.io.out.hasLegalMNret, io.in.xRet.mnret)
+  io.out.hasLegalMret  := TraceRTLChoose(xRetPermitMod.io.out.hasLegalMret, io.in.xRet.mret)
+  io.out.hasLegalSret  := TraceRTLChoose(xRetPermitMod.io.out.hasLegalSret, io.in.xRet.sret)
+  io.out.hasLegalDret  := TraceRTLChoose(xRetPermitMod.io.out.hasLegalDret, io.in.xRet.dret)
 
   io.out.hasLegalWriteFcsr := mLevelPermitMod.io.out.hasLegalWriteFcsr
   io.out.hasLegalWriteVcsr := mLevelPermitMod.io.out.hasLegalWriteVcsr

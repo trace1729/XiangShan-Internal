@@ -16,6 +16,7 @@ import xiangshan.backend.fu.NewCSR.CSRConfig._
 import xiangshan.backend.fu.NewCSR.CSRFunc._
 import xiangshan.backend.fu.util.CSRConst._
 import xiangshan.backend.decode.isa.CSRs
+import xiangshan.DebugOptionsKey
 import system.HasSoCParameter
 import utility.ZeroExt
 import scala.collection.immutable.SeqMap
@@ -569,7 +570,11 @@ class MmptBundle extends CSRBundle { //HasMptCheck
   val PPN = RW(PPNLengthMpt-1, 0).withReset(0.U).withDescription("Mpt level3 talble adress.")
 }
 
-class MstatusBundle extends CSRBundle {
+class MstatusBundle(implicit p: Parameters) extends CSRBundle {
+  private def initContextStatus = {
+    val env = p(DebugOptionsKey)
+    if (env.TraceRTLMode) ContextStatus.Clean else ContextStatus.Off
+  }
 
   val SIE  = CSRRWField     (1).withReset(0.U).withDescription("Global interrupt enable for S-mode.")
   val MIE  = CSRRWField     (3).withReset(0.U).withDescription("Global interrupt enable for M-mode.")
@@ -577,9 +582,9 @@ class MstatusBundle extends CSRBundle {
   val UBE  = CSRROField     (6).withReset(0.U).withDescription("U-mode endianness selector.")
   val MPIE = CSRRWField     (7).withReset(0.U).withDescription("Saved MIE value from before trap entry.")
   val SPP  = CSRRWField     (8).withReset(0.U).withDescription("Privilege level active before trap entry to S-mode.")
-  val VS   = ContextStatus  (10,  9).withReset(ContextStatus.Off).withDescription("Vector context status.")
+  val VS   = ContextStatus  (10,  9).withReset(initContextStatus).withDescription("Vector context status.")
   val MPP  = PrivMode       (12, 11).withReset(PrivMode.U).withDescription("Privilege level active before trap entry to M-mode.")
-  val FS   = ContextStatus  (14, 13).withReset(ContextStatus.Off).withDescription("Floating-point context status.")
+  val FS   = ContextStatus  (14, 13).withReset(initContextStatus).withDescription("Floating-point context status.")
   val XS   = ContextStatusRO(16, 15).withReset(0.U).withDescription("Additional user extension state summary.")
   val MPRV = CSRRWField     (17).withReset(0.U).withDescription("Use MPP for load and store privilege checks when set.")
   val SUM  = CSRRWField     (18).withReset(0.U).withDescription("Permit S-mode data accesses to pages marked as user.")

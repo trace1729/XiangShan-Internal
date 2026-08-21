@@ -11,6 +11,7 @@ import xiangshan.backend.datapath.DataConfig.VAddrData
 import xiangshan.{RedirectLevel, SelImm, XSModule}
 import xiangshan.frontend.PrunedAddrInit
 import xiangshan.frontend.bpu.BranchAttribute
+import xiangshan.frontend.tracertl.TraceRTLChoose
 
 class AddrAddModule(implicit p: Parameters) extends XSModule {
   val io = IO(new Bundle {
@@ -41,9 +42,11 @@ class BranchUnit(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg) {
     SignExt(io.in.bits.data.pc.get, VAddrBits + 1),
     ZeroExt(io.in.bits.data.pc.get, VAddrBits + 1)
   )
+  val traceTaken = io.in.bits.ctrl.traceInfo.branchTaken(0)
+  val actualTaken = TraceRTLChoose(dataModule.io.taken, traceTaken)
   addModule.io.pcExtend := pcExtend
   addModule.io.imm := io.in.bits.data.imm // imm
-  addModule.io.taken := dataModule.io.taken
+  addModule.io.taken := actualTaken
   addModule.io.isRVC := io.in.bits.ctrl.isRVC.get
   addModule.io.nextPcOffset := io.in.bits.data.nextPcOffset.get
 
@@ -51,34 +54,48 @@ class BranchUnit(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg) {
   io.in.ready := io.out.ready
 
   val brhPredictTarget = io.in.bits.ctrl.predictInfo.get.target
-  val brhRealTarget = addModule.io.target(VAddrData().dataWidth - 1, 0)
-  val targetWrong = dataModule.io.fixedTaken && dataModule.io.taken && (brhRealTarget =/= brhPredictTarget)
-  val isMisPred = dataModule.io.mispredict || targetWrong
+  val brhRealFullTarget = TraceRTLChoose(
+    addModule.io.target,
+    Mux(traceTaken, SignExt(io.in.bits.ctrl.traceInfo.target, XLEN), addModule.io.target)
+  )
+  val brhRealTarget = brhRealFullTarget(VAddrData().dataWidth - 1, 0)
+  val targetWrong = dataModule.io.fixedTaken && actualTaken && (brhRealTarget =/= brhPredictTarget)
+  val isMisPred = TraceRTLChoose(
+    dataModule.io.mispredict || targetWrong,
+    (dataModule.io.fixedTaken =/= traceTaken) || targetWrong
+  )
   io.out.bits.res.data := 0.U
   io.out.bits.res.redirect.get match {
     case redirect =>
-      redirect.valid := io.out.valid && (isMisPred || redirect.bits.hasBackendFault)
+      val redirectValidDefault = io.out.valid && (isMisPred || redirect.bits.hasBackendFault)
+      redirect.valid := TraceRTLChoose(
+        redirectValidDefault,
+        redirectValidDefault &&
+          !io.in.bits.ctrl.traceInfo.isWrongPath &&
+          !io.in.bits.ctrl.traceInfo.hasTriggeredExuRedirect
+      )
       redirect.bits := 0.U.asTypeOf(io.out.bits.res.redirect.get.bits)
       redirect.bits.level := RedirectLevel.flushAfter
       redirect.bits.robIdx := io.in.bits.ctrl.robIdx
       redirect.bits.ftqIdx := io.in.bits.ctrl.ftqIdx.get
       redirect.bits.ftqOffset := io.in.bits.ctrl.ftqOffset.get
-      redirect.bits.fullTarget := addModule.io.target
+      redirect.bits.fullTarget := brhRealFullTarget
       redirect.bits.isMisPred := isMisPred
-      redirect.bits.taken := dataModule.io.taken
-      redirect.bits.target := addModule.io.target
+      redirect.bits.taken := actualTaken
+      redirect.bits.target := brhRealTarget
       redirect.bits.pc := io.in.bits.data.pc.get
-      redirect.bits.backendIAF := io.instrAddrTransType.get.checkAccessFault(addModule.io.target)
-      redirect.bits.backendIPF := io.instrAddrTransType.get.checkPageFault(addModule.io.target)
-      redirect.bits.backendIGPF := io.instrAddrTransType.get.checkGuestPageFault(addModule.io.target)
+      redirect.bits.backendIAF := io.instrAddrTransType.get.checkAccessFault(brhRealFullTarget)
+      redirect.bits.backendIPF := io.instrAddrTransType.get.checkPageFault(brhRealFullTarget)
+      redirect.bits.backendIGPF := io.instrAddrTransType.get.checkGuestPageFault(brhRealFullTarget)
       redirect.bits.attribute := io.toFrontendBJUResolve.get.bits.attribute
+      redirect.bits.traceInfo := io.in.bits.ctrl.traceInfo
   }
   io.toFrontendBJUResolve.get.valid := io.out.valid
   io.toFrontendBJUResolve.get.bits.ftqIdx := io.in.bits.ctrl.ftqIdx.get
   io.toFrontendBJUResolve.get.bits.ftqOffset := io.in.bits.ctrl.ftqOffset.get
   io.toFrontendBJUResolve.get.bits.pc := PrunedAddrInit(pcExtend)
-  io.toFrontendBJUResolve.get.bits.target := PrunedAddrInit(addModule.io.target)
-  io.toFrontendBJUResolve.get.bits.taken := dataModule.io.taken
+  io.toFrontendBJUResolve.get.bits.target := PrunedAddrInit(brhRealFullTarget)
+  io.toFrontendBJUResolve.get.bits.taken := actualTaken
   io.toFrontendBJUResolve.get.bits.mispredict := isMisPred
   io.toFrontendBJUResolve.get.bits.attribute.branchType := BranchAttribute.BranchType.Conditional
   io.toFrontendBJUResolve.get.bits.attribute.rasAction := 0.U

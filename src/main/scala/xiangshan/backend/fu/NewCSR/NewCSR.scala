@@ -21,6 +21,7 @@ import xiangshan.backend.fu.PerfCounterIO
 import xiangshan.backend.fu.util.CSRConst
 import xiangshan.backend.trace._
 import xiangshan.backend.decode.isa.CSRs
+import xiangshan.frontend.tracertl.{TraceInstrBundle, TraceRTLChoose}
 
 import scala.collection.immutable.SeqMap
 
@@ -86,6 +87,7 @@ class NewCSRInput(implicit p: Parameters) extends Bundle {
   val sret = Input(Bool())
   val dret = Input(Bool())
   val redirectFlush = Input(Bool())
+  val traceInfo = new TraceInstrBundle
 }
 
 class NewCSROutput(implicit p: Parameters) extends Bundle {
@@ -150,6 +152,7 @@ class NewCSR(implicit val p: Parameters) extends Module
         val isHls = Bool()
         val isFetchMalAddr = Bool()
         val isForVSnonLeafPTE = Bool()
+        val traceInfo = new TraceInstrBundle
       })
       val commit = Input(new RobCommitCSR)
       val robDeqPtr = Input(new RobPtr)
@@ -1173,13 +1176,25 @@ class NewCSR(implicit val p: Parameters) extends Module
   nonDebugTrapTargetPc.raiseIAF  := io.status.instrAddrTransType.checkAccessFault(delayedPcFromXtvec)
   nonDebugTrapTargetPc.raiseIGPF := io.status.instrAddrTransType.checkGuestPageFault(delayedPcFromXtvec)
 
+  private def traceTargetPc(target: UInt): TargetPCBundle = {
+    val out = Wire(new TargetPCBundle)
+    out.pc := SignExt(target, XLEN)
+    out.raiseIPF := false.B
+    out.raiseIAF := false.B
+    out.raiseIGPF := false.B
+    out
+  }
+
+  private val traceTrapTargetPc = traceTargetPc(io.fromRob.trap.bits.traceInfo.target)
+  private val traceXretTargetPc = traceTargetPc(io.in.bits.traceInfo.target)
+
   private val trapTargetUpdate = RegNext(nonDebugTrapEventValid || trapEntryDEvent.valid, false.B)
   io.trapTargetPc.valid := trapTargetUpdate
   io.trapTargetPc.bits := DataHoldBypass(
     Mux(
       trapEntryDEvent.out.targetPc.valid,
       trapEntryDEvent.out.targetPc.bits,
-      nonDebugTrapTargetPc,
+      TraceRTLChoose(nonDebugTrapTargetPc, traceTrapTargetPc),
     ),
     trapTargetUpdate
   )
@@ -1193,10 +1208,10 @@ class NewCSR(implicit val p: Parameters) extends Module
     Mux(ceReEntryDmode,
       targetCeReEntryDmode,
       Mux1H(Seq(
-        mnretEvent.out.targetPc.valid -> mnretEvent.out.targetPc.bits,
-        mretEvent.out.targetPc.valid  -> mretEvent.out.targetPc.bits,
-        sretEvent.out.targetPc.valid  -> sretEvent.out.targetPc.bits,
-        dretEvent.out.targetPc.valid  -> dretEvent.out.targetPc.bits,
+        mnretEvent.out.targetPc.valid -> TraceRTLChoose(mnretEvent.out.targetPc.bits, traceXretTargetPc),
+        mretEvent.out.targetPc.valid  -> TraceRTLChoose(mretEvent.out.targetPc.bits, traceXretTargetPc),
+        sretEvent.out.targetPc.valid  -> TraceRTLChoose(sretEvent.out.targetPc.bits, traceXretTargetPc),
+        dretEvent.out.targetPc.valid  -> TraceRTLChoose(dretEvent.out.targetPc.bits, traceXretTargetPc),
       ))),
     xretTargetUpdate
   )

@@ -10,6 +10,7 @@ import xiangshan.JumpOpType
 import xiangshan.backend.datapath.DataConfig.VAddrData
 import xiangshan.frontend.PrunedAddrInit
 import xiangshan.frontend.bpu.BranchAttribute
+import xiangshan.frontend.tracertl.TraceRTLChoose
 
 class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg) {
   private val jumpDataModule = Module(new JumpDataModule)
@@ -37,7 +38,11 @@ class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg)
   val fixedTaken = io.in.bits.ctrl.predictInfo.get.fixedTaken
   val predTaken  = io.in.bits.ctrl.predictInfo.get.predTaken
   val jmpPredictTarget = io.in.bits.ctrl.predictInfo.get.target
-  val jumpRealTarget = jumpDataModule.io.target(VAddrData().dataWidth - 1, 0)
+  val jumpRealFullTarget = TraceRTLChoose(
+    jumpDataModule.io.target,
+    SignExt(io.in.bits.ctrl.traceInfo.target, XLEN)
+  )
+  val jumpRealTarget = jumpRealFullTarget(VAddrData().dataWidth - 1, 0)
 
   val targetWrong = jumpRealTarget =/= jmpPredictTarget
   val needRedirect = !fixedTaken || targetWrong
@@ -45,21 +50,28 @@ class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg)
 
   val redirect = io.out.bits.res.redirect.get.bits
   val redirectValid = io.out.bits.res.redirect.get.valid
-  redirectValid := io.in.valid && !jumpDataModule.io.isAuipc && (needRedirect || redirect.hasBackendFault)
+  val redirectValidDefault = io.in.valid && !jumpDataModule.io.isAuipc && (needRedirect || redirect.hasBackendFault)
+  redirectValid := TraceRTLChoose(
+    redirectValidDefault,
+    redirectValidDefault &&
+      !io.in.bits.ctrl.traceInfo.isWrongPath &&
+      !io.in.bits.ctrl.traceInfo.hasTriggeredExuRedirect
+  )
   redirect := 0.U.asTypeOf(redirect)
   redirect.level := RedirectLevel.flushAfter
   redirect.robIdx := io.in.bits.ctrl.robIdx
   redirect.ftqIdx := io.in.bits.ctrl.ftqIdx.get
   redirect.ftqOffset := io.in.bits.ctrl.ftqOffset.get
-  redirect.fullTarget := jumpDataModule.io.target
+  redirect.fullTarget := jumpRealFullTarget
   redirect.taken := true.B
-  redirect.target := jumpDataModule.io.target
+  redirect.target := jumpRealTarget
   redirect.pc := io.in.bits.data.pc.get
   redirect.isMisPred := needRedirect
-  redirect.backendIAF := io.instrAddrTransType.get.checkAccessFault(jumpDataModule.io.target)
-  redirect.backendIPF := io.instrAddrTransType.get.checkPageFault(jumpDataModule.io.target)
-  redirect.backendIGPF := io.instrAddrTransType.get.checkGuestPageFault(jumpDataModule.io.target)
+  redirect.backendIAF := io.instrAddrTransType.get.checkAccessFault(jumpRealFullTarget)
+  redirect.backendIPF := io.instrAddrTransType.get.checkPageFault(jumpRealFullTarget)
+  redirect.backendIGPF := io.instrAddrTransType.get.checkGuestPageFault(jumpRealFullTarget)
   redirect.attribute := io.toFrontendBJUResolve.get.bits.attribute
+  redirect.traceInfo := io.in.bits.ctrl.traceInfo
 //  redirect.debug_runahead_checkpoint_id := uop.debugInfo.runahead_checkpoint_id // Todo: assign it
 
   io.in.ready := io.out.ready
@@ -69,7 +81,7 @@ class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg)
   io.toFrontendBJUResolve.get.bits.ftqIdx := io.in.bits.ctrl.ftqIdx.get
   io.toFrontendBJUResolve.get.bits.ftqOffset := io.in.bits.ctrl.ftqOffset.get
   io.toFrontendBJUResolve.get.bits.pc := PrunedAddrInit(pc)
-  io.toFrontendBJUResolve.get.bits.target := PrunedAddrInit(jumpDataModule.io.target)
+  io.toFrontendBJUResolve.get.bits.target := PrunedAddrInit(jumpRealFullTarget)
   io.toFrontendBJUResolve.get.bits.taken := true.B
   io.toFrontendBJUResolve.get.bits.mispredict := needTrain
   io.toFrontendBJUResolve.get.bits.attribute.branchType := MuxCase(
