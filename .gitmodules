@@ -22,3 +22,7 @@
 [submodule "XSCache"]
 	path = XSCache
 	url = https://github.com/OpenXiangShan/XSCache.git
+[submodule "TraceRTL"]
+	path = TraceRTL
+	url = git@github.com:trace1729/TraceRTL-Internal.git
+	branch = main
