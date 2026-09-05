@@ -433,7 +433,7 @@ class Ifu(implicit p: Parameters) extends IfuModule
 
   rvcExpanders.zipWithIndex.foreach { case (expander, i) =>
     expander.io.in      := s2_effectiveAlignedInstrVec(i).data
-    expander.io.fsIsOff := io.csrFsIsOff
+    expander.io.fsIsOff := TraceRTLChoose(io.csrFsIsOff, false.B)
   }
 
   private val s2_expandedInstrDataVec = VecInit(rvcExpanders.map { expander =>
