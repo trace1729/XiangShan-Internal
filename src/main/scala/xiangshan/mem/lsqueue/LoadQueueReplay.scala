@@ -298,11 +298,26 @@ class LoadQueueReplay(implicit p: Parameters) extends XSModule
   // LoadQueueReplaySize * StorePipelineWidth
   val storeIssueScoreBoard = RegInit(VecInit(List.fill(LoadQueueReplaySize)(VecInit(List.fill(StorePipelineWidth)(0.U(LoadDependenceScoreBoardWidth.W))))))
 
+  private def vecFeedbackEnds(u: DynInst): Bool = {
+    VecInit(io.vecFeedback.map { feedback =>
+      feedback.valid &&
+        (feedback.bits.isCommit || feedback.bits.isFlush) &&
+        u.robIdx === feedback.bits.robidx &&
+        u.uopIdx === feedback.bits.uopidx
+    }).asUInt.orR
+  }
+
+  val vecFeedbackCancel = VecInit((0 until LoadQueueReplaySize).map { i =>
+    allocated(i) && vecFeedbackEnds(uop(i))
+  })
+
   /**
    * Enqueue
    */
   val canEnqueue = io.enq.map(_.valid)
-  val cancelEnq = io.enq.map(enq => enq.bits.uop.robIdx.needFlush(io.redirect))
+  val cancelEnq = io.enq.map(enq =>
+    enq.bits.uop.robIdx.needFlush(io.redirect) || (enq.bits.isvec && vecFeedbackEnds(enq.bits.uop))
+  )
   // Use the producer-side need_rep directly so replay admission does not
   // need to re-derive "has any replay cause" from rep_info.cause on this path.
   val needReplay = io.enq.map(enq => enq.bits.rep_info.need_rep)
@@ -521,7 +536,7 @@ class LoadQueueReplay(implicit p: Parameters) extends XSModule
   // l2 hint wakes up cache missed load
   // l2 will send GrantData in next 2/3 cycle, wake up the missed load early and sent them to load pipe, so them will hit the data in D channel or mshr in load S1
   val s0_loadHintWakeMask = VecInit((0 until LoadQueueReplaySize).map(i => {
-    allocated(i) && !scheduled(i) && cause(i)(LoadReplayCauses.C_DM) && blocking(i) && l2HintHit(missMSHRId(i))
+    allocated(i) && !scheduled(i) && !vecFeedbackCancel(i) && cause(i)(LoadReplayCauses.C_DM) && blocking(i) && l2HintHit(missMSHRId(i))
   })).asUInt
   // l2 will send 2 beats data in 2 cycles, so if data needed by this load is in first beat, select it this cycle, otherwise next cycle
   // when isKeyword = 1, s0_loadHintSelMask need overturn
@@ -550,12 +565,12 @@ class LoadQueueReplay(implicit p: Parameters) extends XSModule
   // 3. lower priority load
   val s0_loadHigherPriorityReplaySelMask = VecInit((0 until LoadQueueReplaySize).map(i => {
     val hasHigherPriority = cause(i)(LoadReplayCauses.C_DM) || cause(i)(LoadReplayCauses.C_FF) || cause(i)(LoadReplayCauses.C_UNCACHE)
-    allocated(i) && !scheduled(i) && !blocking(i) && hasHigherPriority
+    allocated(i) && !scheduled(i) && !blocking(i) && !vecFeedbackCancel(i) && hasHigherPriority
   })).asUInt // use uint instead vec to reduce verilog lines
   val s0_remLoadHigherPriorityReplaySelMask = VecInit((0 until LoadPipelineWidth).map(rem => getRemBits(s0_loadHigherPriorityReplaySelMask)(rem)))
   val s0_loadLowerPriorityReplaySelMask = VecInit((0 until LoadQueueReplaySize).map(i => {
     val hasLowerPriority = !cause(i)(LoadReplayCauses.C_DM) && !cause(i)(LoadReplayCauses.C_FF)
-    allocated(i) && !scheduled(i) && !blocking(i) && hasLowerPriority
+    allocated(i) && !scheduled(i) && !blocking(i) && !vecFeedbackCancel(i) && hasLowerPriority
   })).asUInt // use uint instead vec to reduce verilog lines
   val s0_remLoadLowerPriorityReplaySelMask = VecInit((0 until LoadPipelineWidth).map(rem => getRemBits(s0_loadLowerPriorityReplaySelMask)(rem)))
   val s0_loadNormalReplaySelMask = s0_loadLowerPriorityReplaySelMask | s0_loadHigherPriorityReplaySelMask | s0_loadHintSelMask
@@ -660,7 +675,8 @@ class LoadQueueReplay(implicit p: Parameters) extends XSModule
   for (i <- 0 until LoadPipelineWidth) {
     val s1_replayIdx = s1_oldestSel(i).bits
     val s1_redirectCancel = uop(s1_replayIdx).robIdx.needFlush(io.redirect) ||
-      uop(s1_replayIdx).robIdx.needFlush(RegNext(io.redirect))
+      uop(s1_replayIdx).robIdx.needFlush(RegNext(io.redirect)) ||
+      (s1_oldestSel(i).valid && vecFeedbackEnds(uop(s1_replayIdx)))
     s1_cancelReplay(i) := s1_redirectCancel
     val s1_oldestSelV = s1_oldestSel(i).valid && !s1_cancelReplay(i)
     s1_can_go(i)          := replayCanFire(i) && (!s2_oldestSel(i).valid || replay_req(i).fire) || s2_cancelReplay(i)
@@ -679,7 +695,8 @@ class LoadQueueReplay(implicit p: Parameters) extends XSModule
     val s2_replayMSHRId = RegEnable(missMSHRId(s1_replayIdx), s1_can_go(i))
     val s2_missDbUpdated = RegEnable(missDbUpdated(s1_replayIdx), s1_can_go(i))
     val s2_replayCauses = RegEnable(cause(s1_replayIdx), s1_can_go(i))
-    s2_cancelReplay(i) := s2_replayUop.robIdx.needFlush(io.redirect)
+    s2_cancelReplay(i) := s2_replayUop.robIdx.needFlush(io.redirect) ||
+      (s2_oldestSel(i).valid && vecFeedbackEnds(s2_replayUop))
 
     s2_can_go(i) := DontCare
     val replay_req_vaddr = vaddrModule.io.rdata(i)
@@ -879,21 +896,14 @@ class LoadQueueReplay(implicit p: Parameters) extends XSModule
     }
   }
 
-  // vector load, all replay entries of same robidx and uopidx
-  // should be released when vlmergebuffer commit or flush
-  val vecLdCanceltmp = Wire(Vec(LoadQueueReplaySize, Vec(VecLoadPipelineWidth, Bool())))
-  val vecLdCancel = Wire(Vec(LoadQueueReplaySize, Bool()))
-  val vecLdCommittmp = Wire(Vec(LoadQueueReplaySize, Vec(VecLoadPipelineWidth, Bool())))
-  val vecLdCommit = Wire(Vec(LoadQueueReplaySize, Bool()))
+  // A merge-buffer commit or flush terminates every outstanding flow of the
+  // vector uop, including blocked and in-flight replay entries.
   for (i <- 0 until LoadQueueReplaySize) {
-    val fbk = io.vecFeedback
-    for (j <- 0 until VecLoadPipelineWidth) {
-      vecLdCanceltmp(i)(j) := allocated(i) && fbk(j).valid && fbk(j).bits.isFlush && uop(i).robIdx === fbk(j).bits.robidx && uop(i).uopIdx === fbk(j).bits.uopidx
-      vecLdCommittmp(i)(j) := allocated(i) && fbk(j).valid && fbk(j).bits.isCommit && uop(i).robIdx === fbk(j).bits.robidx && uop(i).uopIdx === fbk(j).bits.uopidx
+    when (vecFeedbackCancel(i)) {
+      allocated(i) := false.B
+      scheduled(i) := false.B
+      freeMaskVec(i) := true.B
     }
-    vecLdCancel(i) := vecLdCanceltmp(i).reduce(_ || _)
-    vecLdCommit(i) := vecLdCommittmp(i).reduce(_ || _)
-    XSError(((vecLdCancel(i) || vecLdCommit(i)) && allocated(i)), s"vector load, should not have replay entry $i when commit or flush.\n")
   }
 
   // misprediction recovery / exception redirect
