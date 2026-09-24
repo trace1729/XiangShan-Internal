@@ -5,30 +5,16 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import xiangshan.Redirect
 
-class TraceS3FromIFU(implicit p: Parameters) extends TraceBundle {
-  val valid          = Bool()
-  val traceInsts     = Vec(trtl.TracePredictWidth, Valid(new TraceInstrBundle()))
-  val predInfo       = new TracePredictInfo()
-  val preDecode      = new TracePreDecodeFlatResp()
-  val traceRange     = UInt(trtl.TracePredictWidth.W)
-  val traceForceJump = Bool()
-  val traceTaken2B   = Bool()
-  val concede2Bytes  = Bool()
-  val otherBlock     = Bool()
-}
-
 class TraceFromIFU(implicit p: Parameters) extends TraceBundle {
-  val redirect      = Bool()
-  val s2Flush       = Bool()
-  val s2Fire        = Bool()
-  val s3Fire        = Bool()
-  val ibufferFire   = Bool()
-  val s3Ready       = Bool()
-  val wbEnable      = Bool()
-  val valid         = Bool()
-  val shiftNum      = UInt(2.W)
-  val predInfo      = Input(new TracePredictInfo())
-  val s3            = new TraceS3FromIFU()
+  val ifuS2Flush      = Bool()
+  val ifuS1Flush      = Bool()
+  val ifuS1Fire       = Bool()
+  val ifuS2Fire       = Bool()
+  val ifuS2Valid      = Bool()
+  val ifuWbEnable     = Bool()
+  val ifuS1Valid      = Bool()
+  val ifuS1AlignShift = UInt(2.W)
+  val ifuS1PredInfo   = Input(new TracePredictInfo())
 }
 
 class TraceRTLIO(implicit p: Parameters) extends TraceBundle {
@@ -38,18 +24,9 @@ class TraceRTLIO(implicit p: Parameters) extends TraceBundle {
     val fromIFUBPU  = Bool()
   })
 
-  val predecoder        = Output(new TracePreDecodeFlatResp)
   val checker           = Output(new TracePredCheckerFlatResp)
-  val traceChecker      = Output(new TraceCheckerResp)
-  val traceAlignInsts   = Output(Vec(trtl.TracePredictWidth, Valid(new TraceInstrBundle())))
-  val traceRange        = Output(UInt(trtl.TracePredictWidth.W))
-  val traceTaken2B      = Output(Bool())
-  val concede2Bytes     = Output(Bool())
-  val otherBlock        = Output(Bool())
   val s2Block           = Output(Bool())
   val block             = Output(Bool())
-  val traceForceJump    = Output(Bool())
-  val traceWrongPathEmu = Output(Bool())
   val s2CandidateCount  = Output(UInt(log2Ceil(IBufferEnqueueWidth + 1).W))
   val s3Decoded         = Output(Vec(IBufferEnqueueWidth, new TraceDecodedEntry))
 }
@@ -83,7 +60,7 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
 
     traceReader.io.recv         := traceDriver.io.out.recv
     traceReader.io.redirect     := io.redirect.fromBackend
-    traceReader.io.pcMatch.pcVA := io.fromIFU.predInfo.block(0).startAddr
+    traceReader.io.pcMatch.pcVA := io.fromIFU.ifuS1PredInfo.block(0).startAddr
 
     val pendingConcede2Bytes = RegInit(false.B)
     val nextConcede2Bytes = Wire(Bool())
@@ -92,15 +69,15 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     // fires. Keep the concede state in that same transaction domain: the next
     // S2 packet must see the state produced by the S3 packet being consumed,
     // not the value that will remain in the register until the rising edge.
-    val visibleConcede2Bytes = Mux(io.fromIFU.s3Fire, nextConcede2Bytes, pendingConcede2Bytes)
+    val visibleConcede2Bytes = Mux(io.fromIFU.ifuS2Fire, nextConcede2Bytes, pendingConcede2Bytes)
     val effectiveConcede2Bytes = visibleConcede2Bytes &&
       traceReader.io.traceInsts.valid &&
-      traceReader.io.traceInsts.bits.head.pcVA === io.fromIFU.predInfo.block(0).startAddr - 2.U &&
+      traceReader.io.traceInsts.bits.head.pcVA === io.fromIFU.ifuS1PredInfo.block(0).startAddr - 2.U &&
       traceReader.io.traceInsts.bits.head.inst(1, 0) === 3.U
 
-    traceAligner.io.debug_valid   := io.fromIFU.valid
+    traceAligner.io.debug_valid   := io.fromIFU.ifuS1Valid
     traceAligner.io.traceInsts    := traceReader.io.traceInsts
-    traceAligner.io.predictInfo   := io.fromIFU.predInfo
+    traceAligner.io.predictInfo   := io.fromIFU.ifuS1PredInfo
     traceAligner.io.lastHalfValid := effectiveConcede2Bytes
 
     preDecoder.io.compact := traceAligner.io.result.compact
@@ -109,11 +86,11 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
       (traceAligner.io.result.candidateCount === 0.U && !traceAligner.io.result.concede2Bytes)
 
     // Capture the same S2 transaction that sets IFU s3_valid at the rising edge.
-    val s2ToS3 = io.fromIFU.s2Fire && !io.fromIFU.s2Flush
+    val s2ToS3 = io.fromIFU.ifuS1Fire && !io.fromIFU.ifuS1Flush
 
     val s3Decoded = RegEnable(preDecoder.io.out, s2ToS3)
-    val s3ShiftNum = RegEnable(io.fromIFU.shiftNum, 0.U(2.W), s2ToS3)
-    val s3PredInfo = RegEnable(io.fromIFU.predInfo, s2ToS3)
+    val s3ShiftNum = RegEnable(io.fromIFU.ifuS1AlignShift, 0.U(2.W), s2ToS3)
+    val s3PredInfo = RegEnable(io.fromIFU.ifuS1PredInfo, s2ToS3)
     val s3TraceRange = RegEnable(traceAligner.io.result.position.traceRange, s2ToS3)
     val s3TraceForceJump = RegEnable(traceAligner.io.result.traceForceJump, s2ToS3)
     val s3DetectedConcede2Bytes = RegEnable(traceAligner.io.result.concede2Bytes, s2ToS3)
@@ -121,7 +98,7 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     val s3TraceBaseInstID = RegEnable(traceReader.io.traceInsts.bits.head.InstID, s2ToS3)
 
     // s2_fire && !s2_flush |=> wbEnable 
-    predChecker.io.wbEnable      := io.fromIFU.wbEnable
+    predChecker.io.wbEnable      := io.fromIFU.ifuWbEnable
     predChecker.io.decoded       := s3Decoded
     predChecker.io.predictInfo   := s3PredInfo
     predChecker.io.traceRange    := s3TraceRange
@@ -131,7 +108,7 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     traceChecker.io.fixedValid     := predChecker.io.out.stage1Out.fixedTwoFetchRange
     traceChecker.io.traceForceJump := s3TraceForceJump
 
-    traceDriver.io.fire          := io.fromIFU.s3Fire
+    traceDriver.io.fire          := io.fromIFU.ifuS2Fire
     traceDriver.io.decoded       := s3Decoded
     traceDriver.io.consumeValid  := traceChecker.io.consumeValid
     traceDriver.io.otherBlock    := false.B
@@ -148,16 +125,16 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     // checkerRedirect is produced one cycle after wbEnable. The checked S3
     // packet may fire either with wbEnable or one cycle later with the
     // redirect, so retain the first observed consumption across both cycles.
-    val checkerBaseInstID = RegEnable(s3TraceBaseInstID, io.fromIFU.wbEnable)
+    val checkerBaseInstID = RegEnable(s3TraceBaseInstID, io.fromIFU.ifuWbEnable)
     val checkerRetainedAtWb = RegEnable(
       checkerRetainedInstNum,
       0.U(checkerRetainedInstNum.getWidth.W),
-      io.fromIFU.wbEnable
+      io.fromIFU.ifuWbEnable
     )
     val checkerFiredAtWb = RegEnable(
       traceDriver.io.out.recv.valid,
       false.B,
-      io.fromIFU.wbEnable
+      io.fromIFU.ifuWbEnable
     )
     val checkerFinalRetainedInstNum = Mux(
       checkerFiredAtWb,
@@ -179,32 +156,22 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     val concedeIsInSecondBlock = s3PredInfo.block(1).valid
     nextConcede2Bytes := s3DetectedConcede2Bytes &&
       (!traceDriver.io.out.endWithCFI || concedeIsInSecondBlock) &&
-      !io.fromIFU.redirect &&
-      !io.fromIFU.s2Flush
+      !io.fromIFU.ifuS2Flush &&
+      !io.fromIFU.ifuS1Flush
 
     val preserveConcedeOnInvalidTaken = pendingConcede2Bytes &&
       io.redirect.fromIFUBPU &&
       predChecker.io.out.stage2Out.checkerRedirect.valid &&
       predChecker.io.out.stage2Out.checkerRedirect.bits.invalidTaken
-    val clearPendingConcede = io.fromIFU.redirect || io.redirect.fromIFUBPU ||
-      (io.fromIFU.s2Flush && !io.fromIFU.s3.valid)
+    val clearPendingConcede = io.fromIFU.ifuS2Flush || io.redirect.fromIFUBPU ||
+      (io.fromIFU.ifuS1Flush && !io.fromIFU.ifuS2Valid)
 
     when(clearPendingConcede && !preserveConcedeOnInvalidTaken) {
       pendingConcede2Bytes := false.B
-    }.elsewhen(io.fromIFU.s3Fire) {
+    }.elsewhen(io.fromIFU.ifuS2Fire) {
       pendingConcede2Bytes := nextConcede2Bytes
     }
 
-    io.predecoder := 0.U.asTypeOf(io.predecoder)
-    io.predecoder.pd.zipWithIndex.foreach { case (pd, i) =>
-      pd := preDecoder.io.out(i).pd
-    }
-    io.predecoder.instr.zipWithIndex.foreach { case (inst, i) =>
-      inst := preDecoder.io.out(i).compact.traceInfo.inst
-    }
-    io.predecoder.jumpOffset.zipWithIndex.foreach { case (offset, i) =>
-      offset := preDecoder.io.out(i).jumpOffset
-    }
     val s3DecodedForIFU = shiftToIBuffer(
       s3Decoded,
       s3ShiftNum,
@@ -224,19 +191,8 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     io.checker           := predChecker.io.out
     io.checker.stage1Out.fixedTwoFetchRange := fixedTwoFetchRangeForIFU.asUInt
     io.checker.stage1Out.fixedTwoFetchTaken := fixedTwoFetchTakenForIFU.asUInt
-    io.traceChecker.traceRange := s3TraceRange
-    io.traceAlignInsts.zipWithIndex.foreach { case (inst, i) =>
-      inst.valid := traceAligner.io.result.compact(i).valid
-      inst.bits := traceAligner.io.result.compact(i).traceInfo
-    }
-    io.traceRange        := traceAligner.io.result.position.traceRange
-    io.traceTaken2B      := traceAligner.io.result.concede2Bytes
-    io.concede2Bytes     := effectiveConcede2Bytes
-    io.otherBlock        := !traceReader.io.traceInsts.valid
     io.s2Block           := s2Block
     io.block             := traceDriver.io.out.block
-    io.traceForceJump    := traceAligner.io.result.traceForceJump
-    io.traceWrongPathEmu := false.B
     io.s2CandidateCount  := traceAligner.io.result.candidateCount
     io.s3Decoded         := s3DecodedForIFU
   } else {
