@@ -423,7 +423,8 @@ class Ifu(implicit p: Parameters) extends IfuModule
     s2_alignedFoldPc,
     VecInit(traceAlignedPcVec.map(pc => XORFold(pc(VAddrBits - 1, 1), MemPredPCWidth)))
   )
-  traceBlock := TraceRTLChoose(false.B, traceRTL.io.block && s2_valid)
+  // An emulated wrong-path packet never waits for a trace pc match.
+  traceBlock := TraceRTLChoose(false.B, traceRTL.io.block && s2_valid && !traceRTL.io.wrongPathEmu.s3Packet)
 
   s2_fire := io.toIBuffer.fire
   dontTouch(s2_fire)
@@ -781,6 +782,9 @@ class Ifu(implicit p: Parameters) extends IfuModule
     traceRTL.io.fromIFU.ifuWbEnable     := wbEnable
     traceRTL.io.fromIFU.ifuS1Valid      := s1_valid
     traceRTL.io.fromIFU.ifuS1AlignShift := s1_alignShiftNum
+    traceRTL.io.fromIFU.ifuS1NoTrace := s1_fetchBlock.zip(s1_icacheMeta).map { case (block, meta) =>
+      block.valid && (meta.isUncache || meta.exception.hasException)
+    }.reduce(_ || _)
     traceRTL.io.fromIFU.ifuS1PredInfo.block.zip(s1_fetchBlock).foreach { case (traceBlock, fetchBlock) =>
       traceBlock.valid         := fetchBlock.valid
       traceBlock.startAddr     := fetchBlock.startVAddr.toUInt

@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import xiangshan.Redirect
+import utility.{Constantin, XSPerfAccumulate, XSPerfHistogram}
 
 class TraceFromIFU(implicit p: Parameters) extends TraceBundle {
   val ifuS2Flush      = Bool()
@@ -14,6 +15,7 @@ class TraceFromIFU(implicit p: Parameters) extends TraceBundle {
   val ifuWbEnable     = Bool()
   val ifuS1Valid      = Bool()
   val ifuS1AlignShift = UInt(2.W)
+  val ifuS1NoTrace    = Bool() // uncache or ICache exception: the packet does not carry trace instructions
   val ifuS1PredInfo   = Input(new TracePredictInfo())
 }
 
@@ -29,6 +31,10 @@ class TraceRTLIO(implicit p: Parameters) extends TraceBundle {
   val block             = Output(Bool())
   val s2CandidateCount  = Output(UInt(log2Ceil(IBufferEnqueueWidth + 1).W))
   val s3Decoded         = Output(Vec(IBufferEnqueueWidth, new TraceDecodedEntry))
+  val wrongPathEmu      = Output(new Bundle {
+    val s2Active = Bool() // the IFU s1 packet is aligned as an emulated wrong-path packet
+    val s3Packet = Bool() // the IFU s2 packet is an emulated wrong-path packet
+  })
 }
 
 class TraceRTL(implicit p: Parameters) extends TraceModule {
@@ -57,8 +63,14 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     val preDecoder   = Module(new TracePreDecoder)
     val predChecker  = Module(new TracePredictChecker)
     val traceChecker = Module(new TraceChecker)
+    val traceAlignerWrongPath = Module(new TraceAlignWrongPath)
 
-    traceReader.io.recv         := traceDriver.io.out.recv
+    // Emulated wrong-path packets never consume the reader: after an IFU
+    // redirect the head is already the right-path frontier, and a backend
+    // redirect rewinds the reader anyway.
+    val s3WrongPath = Wire(Bool())
+    traceReader.io.recv.valid   := traceDriver.io.out.recv.valid && !s3WrongPath
+    traceReader.io.recv.bits    := traceDriver.io.out.recv.bits
     traceReader.io.redirect     := io.redirect.fromBackend
     traceReader.io.pcMatch.pcVA := io.fromIFU.ifuS1PredInfo.block(0).startAddr
 
@@ -80,21 +92,68 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     traceAligner.io.predictInfo   := io.fromIFU.ifuS1PredInfo
     traceAligner.io.lastHalfValid := effectiveConcede2Bytes
 
-    preDecoder.io.compact := traceAligner.io.result.compact
-
-    val s2Block = !traceReader.io.traceInsts.valid ||
-      (traceAligner.io.result.candidateCount === 0.U && !traceAligner.io.result.concede2Bytes)
-
     // Capture the same S2 transaction that sets IFU s3_valid at the rising edge.
     val s2ToS3 = io.fromIFU.ifuS1Fire && !io.fromIFU.ifuS1Flush
 
+    /* ** wrong-path emulation **
+     * A pc mismatch in S2 means the predicted fetch block is off the trace.
+     * Instead of blocking the IFU until the redirect, feed right-path trace
+     * instructions tagged isWrongPath. The redirect that resolves the
+     * mismatch comes from an older right-path instruction, so every
+     * emulated instruction is younger than it and is flushed. After the
+     * redirect the right path is fetched again from the rewound reader.
+     */
+    val wpEnable = if (trtl.TraceEnableWrongPathEmu) Constantin.createRecord("TraceWrongPathEmu", true) else false.B
+    val wpState = RegInit(false.B)
+    val wpOffset = RegInit(0.U(log2Ceil(trtl.TraceBufferSize + 1).W))
+    val wpClear = io.redirect.fromBackend.valid || io.redirect.fromIFUBPU
+    val alignMismatch = traceReader.io.traceInsts.valid &&
+      traceAligner.io.result.candidateCount === 0.U && !traceAligner.io.result.concede2Bytes
+    // The reader window is only the S2 frontier when no unconsumed older packet
+    // is still held in S3; otherwise the mismatch is just S3 back-pressure.
+    val s3Released = !io.fromIFU.ifuS2Valid || io.fromIFU.ifuS2Fire
+    val wpConvergence = if (trtl.TraceWrongPathEmuWhenConvergence) traceReader.io.pcMatch.found else true.B
+    val wpEnter = wpEnable && !wpState && io.fromIFU.ifuS1Valid && s3Released && alignMismatch &&
+      !traceReader.io.traceInsts.bits.head.isFastSim && wpConvergence
+    val wpActive = wpState || wpEnter
+
+    traceReader.io.wpOffset := wpOffset
+    traceAlignerWrongPath.io.traceInsts  := traceReader.io.wpInsts
+    traceAlignerWrongPath.io.predictInfo := io.fromIFU.ifuS1PredInfo
+    val wpCount = traceAlignerWrongPath.io.count
+
+    when(wpClear) {
+      wpState  := false.B
+      wpOffset := 0.U
+    }.otherwise {
+      when(wpEnter) {
+        wpState := true.B
+      }
+      when(wpActive && s2ToS3) {
+        wpOffset := traceReader.io.wpBase + wpCount
+      }
+    }
+
+    preDecoder.io.compact := Mux(wpActive, traceAlignerWrongPath.io.compact, traceAligner.io.result.compact)
+
+    val s2Block = Mux(
+      wpActive,
+      // A wrong-path fetch block that is uncache or faults in the ICache would
+      // leave the trace path; keep it blocked as without emulation.
+      !traceReader.io.wpInsts.valid || wpCount === 0.U || io.fromIFU.ifuS1NoTrace,
+      !traceReader.io.traceInsts.valid ||
+        (traceAligner.io.result.candidateCount === 0.U && !traceAligner.io.result.concede2Bytes)
+    )
+    val s2CandidateCount = Mux(wpActive, wpCount, traceAligner.io.result.candidateCount)
+
+    s3WrongPath := RegEnable(wpActive, false.B, s2ToS3)
     val s3Decoded = RegEnable(preDecoder.io.out, s2ToS3)
     val s3ShiftNum = RegEnable(io.fromIFU.ifuS1AlignShift, 0.U(2.W), s2ToS3)
     val s3PredInfo = RegEnable(io.fromIFU.ifuS1PredInfo, s2ToS3)
     val s3TraceRange = RegEnable(traceAligner.io.result.position.traceRange, s2ToS3)
-    val s3TraceForceJump = RegEnable(traceAligner.io.result.traceForceJump, s2ToS3)
-    val s3DetectedConcede2Bytes = RegEnable(traceAligner.io.result.concede2Bytes, s2ToS3)
-    val s3InheritedConcede2Bytes = RegEnable(effectiveConcede2Bytes, s2ToS3)
+    val s3TraceForceJump = RegEnable(traceAligner.io.result.traceForceJump && !wpActive, s2ToS3)
+    val s3DetectedConcede2Bytes = RegEnable(traceAligner.io.result.concede2Bytes && !wpActive, s2ToS3)
+    val s3InheritedConcede2Bytes = RegEnable(effectiveConcede2Bytes && !wpActive, s2ToS3)
     val s3TraceBaseInstID = RegEnable(traceReader.io.traceInsts.bits.head.InstID, s2ToS3)
 
     // s2_fire && !s2_flush |=> wbEnable 
@@ -105,7 +164,15 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     predChecker.io.concede2Bytes := s3InheritedConcede2Bytes
 
     traceChecker.io.decoded        := s3Decoded
-    traceChecker.io.fixedValid     := predChecker.io.out.stage1Out.fixedTwoFetchRange
+    // Emulated wrong-path packets are not checked against the prediction:
+    // keep every placed instruction and never raise a checker redirect.
+    val s3CompactValid = VecInit(s3Decoded.map(_.compact.valid)).asUInt
+    val fixedTwoFetchRange = Mux(s3WrongPath, s3CompactValid, predChecker.io.out.stage1Out.fixedTwoFetchRange)
+    val fixedTwoFetchTaken = Mux(s3WrongPath, 0.U, predChecker.io.out.stage1Out.fixedTwoFetchTaken)
+    val checkerIsWrongPath = RegEnable(s3WrongPath, false.B, io.fromIFU.ifuWbEnable)
+    val checkerRedirectValid = predChecker.io.out.stage2Out.checkerRedirect.valid && !checkerIsWrongPath
+
+    traceChecker.io.fixedValid     := fixedTwoFetchRange
     traceChecker.io.traceForceJump := s3TraceForceJump
 
     traceDriver.io.fire          := io.fromIFU.ifuS2Fire
@@ -161,7 +228,7 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
 
     val preserveConcedeOnInvalidTaken = pendingConcede2Bytes &&
       io.redirect.fromIFUBPU &&
-      predChecker.io.out.stage2Out.checkerRedirect.valid &&
+      checkerRedirectValid &&
       predChecker.io.out.stage2Out.checkerRedirect.bits.invalidTaken
     val clearPendingConcede = io.fromIFU.ifuS2Flush || io.redirect.fromIFUBPU ||
       (io.fromIFU.ifuS1Flush && !io.fromIFU.ifuS2Valid)
@@ -178,12 +245,12 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
       0.U.asTypeOf(new TraceDecodedEntry)
     )
     val fixedTwoFetchRangeForIFU = shiftToIBuffer(
-      VecInit(predChecker.io.out.stage1Out.fixedTwoFetchRange.asBools),
+      VecInit(fixedTwoFetchRange.asBools),
       s3ShiftNum,
       false.B
     )
     val fixedTwoFetchTakenForIFU = shiftToIBuffer(
-      VecInit(predChecker.io.out.stage1Out.fixedTwoFetchTaken.asBools),
+      VecInit(fixedTwoFetchTaken.asBools),
       s3ShiftNum,
       false.B
     )
@@ -191,10 +258,46 @@ class TraceRTL(implicit p: Parameters) extends TraceModule {
     io.checker           := predChecker.io.out
     io.checker.stage1Out.fixedTwoFetchRange := fixedTwoFetchRangeForIFU.asUInt
     io.checker.stage1Out.fixedTwoFetchTaken := fixedTwoFetchTakenForIFU.asUInt
+    io.checker.stage2Out.checkerRedirect.valid := checkerRedirectValid
+    when(checkerIsWrongPath) {
+      io.checker.stage2Out.perfFaultType := 0.U.asTypeOf(io.checker.stage2Out.perfFaultType)
+    }
     io.s2Block           := s2Block
-    io.block             := traceDriver.io.out.block
-    io.s2CandidateCount  := traceAligner.io.result.candidateCount
+    io.block             := traceDriver.io.out.block && !s3WrongPath
+    io.s2CandidateCount  := s2CandidateCount
     io.s3Decoded         := s3DecodedForIFU
+    io.wrongPathEmu.s2Active := wpActive
+    io.wrongPathEmu.s3Packet := s3WrongPath
+
+    /* ** perf ** */
+    val s3EnqInstNum = PopCount(s3CompactValid)
+    val wpEpisodeInsts = RegInit(0.U(32.W))
+    val wpEpisodeCycles = RegInit(0.U(32.W))
+    val wpExit = wpState && wpClear
+    when(wpExit || !wpState) {
+      wpEpisodeInsts  := 0.U
+      wpEpisodeCycles := 0.U
+    }.otherwise {
+      wpEpisodeInsts  := wpEpisodeInsts + Mux(io.fromIFU.ifuS2Fire && s3WrongPath, s3EnqInstNum, 0.U)
+      wpEpisodeCycles := wpEpisodeCycles + 1.U
+    }
+    XSPerfAccumulate("s1_block_reader_invalid", io.fromIFU.ifuS1Valid && !traceReader.io.traceInsts.valid)
+    XSPerfAccumulate("s1_block_pc_mismatch", io.fromIFU.ifuS1Valid && alignMismatch && !wpActive)
+    XSPerfAccumulate("s1_block_by_s3", io.fromIFU.ifuS1Valid && alignMismatch && !s3Released)
+    XSPerfAccumulate("wpe_enter", wpEnter && !wpClear)
+    XSPerfAccumulate("wpe_active_cycles", wpState)
+    XSPerfAccumulate("wpe_exit_backend", wpExit && io.redirect.fromBackend.valid)
+    XSPerfAccumulate("wpe_exit_ifu", wpExit && !io.redirect.fromBackend.valid)
+    XSPerfAccumulate("wpe_s1_block", io.fromIFU.ifuS1Valid && wpActive && s2Block)
+    XSPerfAccumulate("wpe_s1_packets", s2ToS3 && wpActive)
+    XSPerfAccumulate("wpe_s1_insts", Mux(s2ToS3 && wpActive, wpCount, 0.U))
+    XSPerfAccumulate("wpe_window_wrap", s2ToS3 && wpActive && wpOffset =/= 0.U && traceReader.io.wpBase === 0.U)
+    XSPerfAccumulate("wpe_enq_packets", io.fromIFU.ifuS2Fire && s3WrongPath)
+    XSPerfAccumulate("wpe_enq_insts", Mux(io.fromIFU.ifuS2Fire && s3WrongPath, s3EnqInstNum, 0.U))
+    XSPerfAccumulate("wpe_checker_redirect_masked",
+      predChecker.io.out.stage2Out.checkerRedirect.valid && checkerIsWrongPath)
+    XSPerfHistogram("wpe_episode_enq_insts", wpEpisodeInsts, wpExit, 0, 256, 16)
+    XSPerfHistogram("wpe_episode_cycles", wpEpisodeCycles, wpExit, 0, 128, 8)
   } else {
     io <> DontCare
   }
