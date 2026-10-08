@@ -133,6 +133,14 @@ class LoadQueueRAW(implicit p: Parameters) extends XSModule
     io.stAddrReadySqPtr.isBefore(sqIdx)
   })
   val needEnqueue = canEnqueue.zip(hasAddrInvalidStore).zip(cancelEnqueue).map { case ((v, r), c) => v && r && !c }
+  // Rank contenders by ROB age so a busy low-numbered load pipe cannot starve an older request.
+  val enqueueRank = io.query.indices.map { w =>
+    PopCount(io.query.indices.map { other =>
+      val otherIsOlder = isBefore(io.query(other).req.bits.robIdx, io.query(w).req.bits.robIdx)
+      val sameRobIdx = io.query(other).req.bits.robIdx === io.query(w).req.bits.robIdx
+      needEnqueue(other) && (otherIsOlder || sameRobIdx && (other < w).B)
+    })
+  }
 
   // Allocate logic
   val acceptedVec = Wire(Vec(LoadPipelineWidth, Bool()))
@@ -148,7 +156,7 @@ class LoadQueueRAW(implicit p: Parameters) extends XSModule
     freeList.io.allocateReq(w) := true.B
 
     //  Allocate ready
-    val offset = PopCount(needEnqueue.take(w))
+    val offset = enqueueRank(w)
     val canAccept = freeList.io.canAllocate(offset)
     val enqIndex = freeList.io.allocateSlot(offset)
     enq.ready := Mux(needEnqueue(w), canAccept, true.B)

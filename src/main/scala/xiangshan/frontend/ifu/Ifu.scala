@@ -433,7 +433,7 @@ class Ifu(implicit p: Parameters) extends IfuModule
 
   rvcExpanders.zipWithIndex.foreach { case (expander, i) =>
     expander.io.in      := s2_effectiveAlignedInstrVec(i).data
-    expander.io.fsIsOff := io.csrFsIsOff
+    expander.io.fsIsOff := TraceRTLChoose(io.csrFsIsOff, false.B)
   }
 
   private val s2_expandedInstrDataVec = VecInit(rvcExpanders.map { expander =>
@@ -773,16 +773,15 @@ class Ifu(implicit p: Parameters) extends IfuModule
   traceRTL.io.fromIFU  := 0.U.asTypeOf(traceRTL.io.fromIFU)
   traceRTL.io.redirect := 0.U.asTypeOf(traceRTL.io.redirect)
   if (env.TraceRTLMode) {
-    traceRTL.io.fromIFU.redirect      := s2_flush
-    traceRTL.io.fromIFU.s2Flush       := s1_flush
-    traceRTL.io.fromIFU.s2Fire        := s1_fire
-    traceRTL.io.fromIFU.s3Fire        := s2_fire
-    traceRTL.io.fromIFU.ibufferFire   := io.toIBuffer.fire
-    traceRTL.io.fromIFU.s3Ready       := s2_ready
-    traceRTL.io.fromIFU.wbEnable      := wbEnable
-    traceRTL.io.fromIFU.valid         := s1_valid
-    traceRTL.io.fromIFU.shiftNum      := s1_alignShiftNum
-    traceRTL.io.fromIFU.predInfo.block.zip(s1_fetchBlock).foreach { case (traceBlock, fetchBlock) =>
+    traceRTL.io.fromIFU.ifuS2Flush      := s2_flush
+    traceRTL.io.fromIFU.ifuS1Flush      := s1_flush
+    traceRTL.io.fromIFU.ifuS1Fire       := s1_fire
+    traceRTL.io.fromIFU.ifuS2Fire       := s2_fire
+    traceRTL.io.fromIFU.ifuS2Valid      := s2_valid
+    traceRTL.io.fromIFU.ifuWbEnable     := wbEnable
+    traceRTL.io.fromIFU.ifuS1Valid      := s1_valid
+    traceRTL.io.fromIFU.ifuS1AlignShift := s1_alignShiftNum
+    traceRTL.io.fromIFU.ifuS1PredInfo.block.zip(s1_fetchBlock).foreach { case (traceBlock, fetchBlock) =>
       traceBlock.valid         := fetchBlock.valid
       traceBlock.startAddr     := fetchBlock.startVAddr.toUInt
       traceBlock.nextStartAddr := fetchBlock.nextStartVAddr.toUInt
@@ -790,7 +789,6 @@ class Ifu(implicit p: Parameters) extends IfuModule
       traceBlock.size          := fetchBlock.size
       traceBlock.ftqOffset     := fetchBlock.takenCfiOffset
     }
-    traceRTL.io.fromIFU.s3.valid                  := s2_valid
     traceRTL.io.redirect.fromBackend             := fromFtq.redirect
     traceRTL.io.redirect.fromIFUBPU              := wbRedirect.valid
   }
