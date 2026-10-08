@@ -54,7 +54,7 @@ class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg)
   redirectValid := TraceRTLChoose(
     redirectValidDefault,
     redirectValidDefault &&
-      !io.in.bits.ctrl.traceInfo.isWrongPath &&
+      (p(TraceRTLParamKey).TraceWrongPathReal.B || !io.in.bits.ctrl.traceInfo.isWrongPath) &&
       !io.in.bits.ctrl.traceInfo.hasTriggeredExuRedirect
   )
   redirect := 0.U.asTypeOf(redirect)
@@ -88,7 +88,7 @@ class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg)
   io.out.bits.res.data := jumpDataModule.io.result
   io.toFrontendBJUResolve.get.valid := io.out.valid && !JumpOpType.jumpOpisAuipc(func) && TraceRTLChoose(
     true.B,
-    p(TraceRTLParamKey).TraceWrongPathEmuTrain.B || !io.in.bits.ctrl.traceInfo.isWrongPath
+    p(TraceRTLParamKey).TraceWrongPathTrain.B || !io.in.bits.ctrl.traceInfo.isWrongPath
   )
   io.toFrontendBJUResolve.get.bits.ftqIdx := io.in.bits.ctrl.ftqIdx.get
   io.toFrontendBJUResolve.get.bits.ftqOffset := io.in.bits.ctrl.ftqOffset.get
