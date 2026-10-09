@@ -471,7 +471,8 @@ class IBuffer(implicit p: Parameters) extends IBufferModule with HasCircularQueu
   if (env.TraceRTLMode) {
     val traceDriveCollector = Module(new TraceDriveCollector)
     traceDriveCollector.io.in.zip(io.out).foreach { case (trace, out) =>
-      trace.valid     := out.fire && !io.flush
+      // Emulated wrong-path instructions are not part of the drive stream.
+      trace.valid     := out.fire && !io.flush && !out.bits.traceInfo.isWrongPath
       trace.bits.inst := out.bits.traceInfo.inst
       trace.bits.pc   := out.bits.pc
       XSError(out.fire && out.bits.pc =/= out.bits.traceInfo.pcVA, "TraceIBuffer: pc mismatch")

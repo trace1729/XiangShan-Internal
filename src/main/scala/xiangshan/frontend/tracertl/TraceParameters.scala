@@ -34,7 +34,22 @@ case class TraceRTLParameters
   // Control flags
   TraceOverrideTarget: Boolean = true, // use trace target instead of PC+offset for branch targets
   TraceSoftL1TLB: Boolean = false,     // bypass L1 TLB misses with TraceRTL address translation
-  TraceSoftL1TLBCheck: Boolean = false // compare native L1 TLB hits against TraceRTL translation
+  TraceSoftL1TLBCheck: Boolean = false, // compare native L1 TLB hits against TraceRTL translation
+
+  // Wrong-path emulation: on a trace pc mismatch, keep the IFU running with
+  // right-path trace instructions tagged isWrongPath until a redirect.
+  TraceEnableWrongPathEmu: Boolean = true,           // build the hardware; runtime switch is Constantin "TraceWrongPathEmu"
+  TraceWrongPathEmuWhenConvergence: Boolean = false, // only enter when the fetch pc is found in the trace buffer
+  TraceWrongPathEmuTrain: Boolean = false,           // let wrong-path BJU resolves train the BPU
+  // Real wrong-path emulation: place, at the predicted fetch PCs, instances of
+  // the static instructions found there in the trace (C++ oracle), and let
+  // wrong-path BJU/JU resolve, train the BPU and redirect the frontend.
+  // Runtime env: TRACERTL_WP_DISABLE, TRACERTL_WP_PAST_ONLY, TRACERTL_WP_IFU_CHECK.
+  TraceWrongPathEmuReal: Boolean = true
 ) {
   def TraceBufferSize = TraceFetchWidth * 4 // 64-entry circular buffer
+  def TraceWrongPathReal = TraceEnableWrongPathEmu && TraceWrongPathEmuReal
+  // Real wrong-path instructions sit at their own fetch positions, so their
+  // resolves are as meaningful to the BPU as in execution-driven simulation.
+  def TraceWrongPathTrain = TraceWrongPathEmuTrain || TraceWrongPathReal
 }

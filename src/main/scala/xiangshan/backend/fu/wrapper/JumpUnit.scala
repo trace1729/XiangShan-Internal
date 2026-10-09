@@ -10,7 +10,7 @@ import xiangshan.JumpOpType
 import xiangshan.backend.datapath.DataConfig.VAddrData
 import xiangshan.frontend.PrunedAddrInit
 import xiangshan.frontend.bpu.BranchAttribute
-import xiangshan.frontend.tracertl.{TraceRTLChoose, TraceRTLDontCareValue}
+import xiangshan.frontend.tracertl.{TraceRTLChoose, TraceRTLDontCareValue, TraceRTLParamKey}
 
 class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg) {
   private val jumpDataModule = Module(new JumpDataModule)
@@ -54,7 +54,7 @@ class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg)
   redirectValid := TraceRTLChoose(
     redirectValidDefault,
     redirectValidDefault &&
-      !io.in.bits.ctrl.traceInfo.isWrongPath &&
+      (p(TraceRTLParamKey).TraceWrongPathReal.B || !io.in.bits.ctrl.traceInfo.isWrongPath) &&
       !io.in.bits.ctrl.traceInfo.hasTriggeredExuRedirect
   )
   redirect := 0.U.asTypeOf(redirect)
@@ -86,7 +86,10 @@ class JumpUnit(cfg: FuConfig)(implicit p: Parameters) extends PipedFuncUnit(cfg)
   io.in.ready := io.out.ready
   io.out.valid := io.in.valid
   io.out.bits.res.data := jumpDataModule.io.result
-  io.toFrontendBJUResolve.get.valid := io.out.valid && !JumpOpType.jumpOpisAuipc(func)
+  io.toFrontendBJUResolve.get.valid := io.out.valid && !JumpOpType.jumpOpisAuipc(func) && TraceRTLChoose(
+    true.B,
+    p(TraceRTLParamKey).TraceWrongPathTrain.B || !io.in.bits.ctrl.traceInfo.isWrongPath
+  )
   io.toFrontendBJUResolve.get.bits.ftqIdx := io.in.bits.ctrl.ftqIdx.get
   io.toFrontendBJUResolve.get.bits.ftqOffset := io.in.bits.ctrl.ftqOffset.get
   io.toFrontendBJUResolve.get.bits.pc := PrunedAddrInit(pc)

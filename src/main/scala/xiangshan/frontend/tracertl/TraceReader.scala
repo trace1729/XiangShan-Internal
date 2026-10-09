@@ -12,6 +12,12 @@ class TraceReaderIO(implicit p: Parameters) extends TraceBundle {
   val ifuRedirect = Flipped(Valid(UInt(trtl.TraceInstIDWidth.W)))
   val traceInsts = Output(Valid(Vec(trtl.TracePredictWidth, new TraceInstrBundle())))
   val pcMatch    = Flipped(new TracePCMatchBundle())
+  // Wrong-path emulation window: the packet starting wpOffset instructions
+  // after the (post-consumption) head. Falls back to the head window when the
+  // buffer does not hold that far; wpBase reports the offset actually used.
+  val wpOffset   = Input(UInt(log2Ceil(trtl.TraceBufferSize + 1).W))
+  val wpInsts    = Output(Valid(Vec(trtl.TracePredictWidth, new TraceInstrBundle())))
+  val wpBase     = Output(UInt(log2Ceil(trtl.TraceBufferSize + 1).W))
 }
 
 class TraceBufferPtr(size: Int) extends CircularQueuePtr[TraceBufferPtr](size)
@@ -143,6 +149,21 @@ class TraceReader(implicit p: Parameters) extends TraceModule with HasCircularQu
       distanceBetween(enqPtr, visibleDeqPtr) >= trtl.TracePredictWidth.U
 
     io.pcMatch.found := Cat(traceBuffer.map(_.pcVA === io.pcMatch.pcVA)).orR
+
+    if (trtl.TraceEnableWrongPathEmu) {
+      val visibleCount = distanceBetween(enqPtr, visibleDeqPtr)
+      val wpFits = visibleCount >= io.wpOffset +& trtl.TracePredictWidth.U
+      val wpBase = Mux(wpFits, io.wpOffset, 0.U)
+      val wpDeqPtr = visibleDeqPtr + wpBase
+      io.wpInsts.bits.zipWithIndex.foreach { case (inst, i) =>
+        inst := traceBuffer((wpDeqPtr + i.U).value)
+      }
+      io.wpInsts.valid := io.traceInsts.valid
+      io.wpBase := wpBase
+    } else {
+      io.wpInsts := 0.U.asTypeOf(io.wpInsts)
+      io.wpBase := 0.U
+    }
 
     XSPerfAccumulate("TraceReaderValid", io.traceInsts.valid)
     XSPerfAccumulate("TraceReaderNotValid", !io.traceInsts.valid)

@@ -11,7 +11,7 @@ import xiangshan.backend.datapath.DataConfig.VAddrData
 import xiangshan.{RedirectLevel, SelImm, XSModule}
 import xiangshan.frontend.PrunedAddrInit
 import xiangshan.frontend.bpu.BranchAttribute
-import xiangshan.frontend.tracertl.{TraceRTLChoose, TraceRTLDontCareValue}
+import xiangshan.frontend.tracertl.{TraceRTLChoose, TraceRTLDontCareValue, TraceRTLParamKey}
 
 class AddrAddModule(implicit p: Parameters) extends XSModule {
   val io = IO(new Bundle {
@@ -71,7 +71,7 @@ class BranchUnit(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg) {
       redirect.valid := TraceRTLChoose(
         redirectValidDefault,
         redirectValidDefault &&
-          !io.in.bits.ctrl.traceInfo.isWrongPath &&
+          (p(TraceRTLParamKey).TraceWrongPathReal.B || !io.in.bits.ctrl.traceInfo.isWrongPath) &&
           !io.in.bits.ctrl.traceInfo.hasTriggeredExuRedirect
       )
       redirect.bits := 0.U.asTypeOf(io.out.bits.res.redirect.get.bits)
@@ -99,7 +99,13 @@ class BranchUnit(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg) {
       redirect.bits.attribute := io.toFrontendBJUResolve.get.bits.attribute
       redirect.bits.traceInfo := io.in.bits.ctrl.traceInfo
   }
-  io.toFrontendBJUResolve.get.valid := io.out.valid
+  // Overlay wrong-path instructions carry right-path trace content at
+  // wrong-path fetch positions, so their resolves only train the BPU on
+  // request; real wrong-path instructions sit at their own PCs and always train.
+  io.toFrontendBJUResolve.get.valid := io.out.valid && TraceRTLChoose(
+    true.B,
+    p(TraceRTLParamKey).TraceWrongPathTrain.B || !io.in.bits.ctrl.traceInfo.isWrongPath
+  )
   io.toFrontendBJUResolve.get.bits.ftqIdx := io.in.bits.ctrl.ftqIdx.get
   io.toFrontendBJUResolve.get.bits.ftqOffset := io.in.bits.ctrl.ftqOffset.get
   io.toFrontendBJUResolve.get.bits.pc := PrunedAddrInit(pcExtend)
